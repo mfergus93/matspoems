@@ -1,0 +1,3 @@
+ALTER TABLE visits ADD COLUMN city TEXT;
+ALTER TABLE visits ADD COLUMN region TEXT;
+ALTER TABLE visits ADD COLUMN postal_code TEXT;
