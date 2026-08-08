@@ -1,0 +1,1 @@
+SELECT id, visited_at, ip_address, COALESCE(city, 'Unknown City') as city, COALESCE(region, '') as region, COALESCE(postal_code, 'Unknown ZIP') as zip, COALESCE(country, 'US') as country, path, COALESCE(referrer, 'Direct') as referrer, COALESCE(user_agent, 'Unknown') as user_agent FROM visits ORDER BY visited_at DESC LIMIT 1000;

@@ -1,0 +1,7 @@
+# Secret token file (local encryption)
+*.secret.clixml
+*.secret.json
+
+# Node modules & Wrangler build outputs
+node_modules/
+.wrangler/

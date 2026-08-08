@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Matt's Poems — Personal Poetry Feed</title>
+  <meta name="description" content="A clean, simple static poetry feed hosted by Matt.">
+  <meta name="author" content="Matt">
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;1,400;1,500&family=Plus+Jakarta+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+
+  <!-- Favicon -->
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+
+  <!-- Stylesheet -->
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <div class="app-container">
+    
+    <!-- Site Header -->
+    <header class="site-header">
+      <div class="header-brand">
+        <h1 class="site-title">Matt's Poems</h1>
+        <p class="site-subtitle">Poems aka containment strategies.</p>
+      </div>
+
+      <div class="theme-selector-wrapper">
+        <select id="themeSelect" class="theme-select" aria-label="Select color theme">
+          <option value="light">Light</option>
+          <option value="dark">Dark</option>
+        </select>
+      </div>
+    </header>
+
+    <!-- Poetry Feed Container -->
+    <main>
+      <section id="poemFeed" class="poetry-feed" aria-live="polite">
+        <!-- Collapsible Poem Cards rendered dynamically -->
+      </section>
+
+      <!-- Favorites Section -->
+      <section class="selected-works-section">
+        <div class="selected-works-header">
+          <h2 class="section-title">Favorites</h2>
+          <p class="section-desc">A few classic poems I keep coming back to.</p>
+        </div>
+        <div id="favoritesFeed" class="poetry-feed" aria-live="polite">
+          <!-- Collapsible Favorite Poem Cards rendered dynamically -->
+        </div>
+      </section>
+
+      <!-- Unsent Letter Section -->
+      <section class="selected-works-section unsent-letter-section">
+        <div class="selected-works-header">
+          <h2 class="section-title">Unsent Letter</h2>
+          <p class="section-desc">Protected entry.</p>
+        </div>
+        <div id="unsentLetterContainer" class="unsent-letter-container">
+          <!-- Interactive question box or unlocked letter rendered dynamically -->
+        </div>
+      </section>
+    </main>
+
+  </div>
+
+  <!-- Toast Notification -->
+  <div id="toast" class="toast-notification" aria-live="assertive"></div>
+
+  <!-- Scripts -->
+  <script src="poems.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

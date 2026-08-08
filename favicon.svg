@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!-- Outer Dark Background Disc -->
+  <circle cx="50" cy="50" r="48" fill="#073642"/>
+  
+  <!-- Yellow Emoji Face -->
+  <circle cx="50" cy="50" r="38" fill="#f59e0b"/>
+  
+  <!-- Glasses Frames -->
+  <!-- Left Lens Frame -->
+  <rect x="20" y="32" width="26" height="22" rx="5" fill="#1e293b" stroke="#0f172a" stroke-width="2"/>
+  <rect x="23" y="35" width="20" height="16" rx="3" fill="#fef3c7" opacity="0.9"/>
+  <!-- Left Eye Dot -->
+  <circle cx="33" cy="43" r="3.5" fill="#0f172a"/>
+  
+  <!-- Right Lens Frame -->
+  <rect x="54" y="32" width="26" height="22" rx="5" fill="#1e293b" stroke="#0f172a" stroke-width="2"/>
+  <rect x="57" y="35" width="20" height="16" rx="3" fill="#fef3c7" opacity="0.9"/>
+  <!-- Right Eye Dot -->
+  <circle cx="67" cy="43" r="3.5" fill="#0f172a"/>
+  
+  <!-- Glasses Bridge -->
+  <rect x="44" y="38" width="12" height="4" rx="1" fill="#1e293b"/>
+  
+  <!-- Smile Line -->
+  <path d="M 34 62 Q 50 74 66 62" fill="none" stroke="#0f172a" stroke-width="3.5" stroke-linecap="round"/>
+  
+  <!-- Buck Teeth -->
+  <path d="M 44 65 H 56 V 73 C 56 74, 53 75, 50 75 C 47 75, 44 74, 44 73 Z" fill="#ffffff" stroke="#0f172a" stroke-width="2"/>
+  <line x1="50" y1="65" x2="50" y2="74" stroke="#0f172a" stroke-width="1.5"/>
+</svg>
