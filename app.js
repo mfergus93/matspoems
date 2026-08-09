@@ -110,7 +110,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const stanzasWrapper = card.querySelector('.stanzas-wrapper');
       if (stanzasWrapper) {
         const questionText = unsentStep === 1
-          ? 'How many toes do the two of us have?'
+          ? 'What is your name?'
           : "Who's shotglass?";
 
         stanzasWrapper.innerHTML = `
@@ -138,7 +138,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const val = inputEl.value.trim().toLowerCase();
 
             if (unsentStep === 1) {
-              if (val === '12' || val === 'twelve') {
+              if (val === 'emma') {
                 unsentStep = 2;
                 state.expandedIds.add('unsent-letter');
                 renderUnsentLetterSection();
