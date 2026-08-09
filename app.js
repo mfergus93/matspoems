@@ -110,8 +110,8 @@ document.addEventListener('DOMContentLoaded', () => {
       const stanzasWrapper = card.querySelector('.stanzas-wrapper');
       if (stanzasWrapper) {
         let questionText = 'What is your name?';
-        if (unsentStep === 2) questionText = 'How many toes do we have together?';
-        if (unsentStep === 3) questionText = "Who's shotglass?";
+        if (unsentStep === 2) questionText = "Who's shotglass?";
+        if (unsentStep === 3) questionText = 'How many toes do we have together?';
 
         stanzasWrapper.innerHTML = `
           <div class="unsent-letter-card">
@@ -147,7 +147,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 inputEl.select();
               }
             } else if (unsentStep === 2) {
-              if (val === '12' || val === 'twelve') {
+              const validGrandmaAnswers = ['grandma', 'grandmas', "grandma's", 'grandma’s'];
+              if (validGrandmaAnswers.includes(val)) {
                 unsentStep = 3;
                 state.expandedIds.add('unsent-letter');
                 renderUnsentLetterSection();
@@ -156,8 +157,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 inputEl.select();
               }
             } else if (unsentStep === 3) {
-              const validGrandmaAnswers = ['grandma', 'grandmas', "grandma's", 'grandma’s'];
-              if (validGrandmaAnswers.includes(val)) {
+              if (val === '12' || val === 'twelve') {
                 unsentStep = 'unlocked';
                 sessionStorage.setItem('unsent_letter_unlocked', 'true');
                 state.expandedIds.add('unsent-letter');
