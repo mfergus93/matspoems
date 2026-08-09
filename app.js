@@ -31,69 +31,10 @@ document.addEventListener('DOMContentLoaded', () => {
   renderUnsentLetterSection();
 
   function renderUnsentLetterSection() {
-    if (!unsentContainerEl) return;
+    if (!unsentContainerEl || typeof UNSENT_LETTER_DATA === 'undefined') return;
     unsentContainerEl.innerHTML = '';
-
-    if (unsentStep === 'unlocked') {
-      const letterCard = createPoemCard(UNSENT_LETTER_DATA);
-      letterCard.classList.add('expanded');
-      unsentContainerEl.appendChild(letterCard);
-      return;
-    }
-
-    const lockCard = document.createElement('div');
-    lockCard.className = 'unsent-letter-card';
-
-    const questionText = unsentStep === 1
-      ? 'How many toes do the two of us have?'
-      : "Who's shotglass?";
-
-    const stepLabel = `Question ${unsentStep} of 2`;
-
-    lockCard.innerHTML = `
-      <div class="lock-step-indicator">${stepLabel}</div>
-      <h3 class="lock-question">${questionText}</h3>
-      <form class="lock-form" id="lockForm">
-        <div class="lock-input-group">
-          <input type="text" class="lock-input" id="lockInput" placeholder="Enter answer..." autocomplete="off" required />
-          <button type="submit" class="lock-btn">Submit</button>
-        </div>
-        <div class="lock-error" id="lockError">Incorrect answer. Try again.</div>
-      </form>
-    `;
-
-    unsentContainerEl.appendChild(lockCard);
-
-    const formEl = lockCard.querySelector('#lockForm');
-    const inputEl = lockCard.querySelector('#lockInput');
-    const errorEl = lockCard.querySelector('#lockError');
-
-    if (inputEl) inputEl.focus();
-
-    formEl.addEventListener('submit', (e) => {
-      e.preventDefault();
-      const val = inputEl.value.trim().toLowerCase();
-
-      if (unsentStep === 1) {
-        if (val === '12' || val === 'twelve') {
-          unsentStep = 2;
-          renderUnsentLetterSection();
-        } else {
-          errorEl.classList.add('show');
-          inputEl.select();
-        }
-      } else if (unsentStep === 2) {
-        const validGrandmaAnswers = ['grandma', 'grandmas', "grandma's", 'grandma’s'];
-        if (validGrandmaAnswers.includes(val)) {
-          unsentStep = 'unlocked';
-          sessionStorage.setItem('unsent_letter_unlocked', 'true');
-          renderUnsentLetterSection();
-        } else {
-          errorEl.classList.add('show');
-          inputEl.select();
-        }
-      }
-    });
+    const letterCard = createPoemCard(UNSENT_LETTER_DATA);
+    unsentContainerEl.appendChild(letterCard);
   }
 
   // Theme Listener
@@ -163,6 +104,64 @@ document.addEventListener('DOMContentLoaded', () => {
         </div>
       </div>
     `;
+
+    // Embed Question Box inside Unsent Letter card if locked
+    if (poem.id === 'unsent-letter' && unsentStep !== 'unlocked') {
+      const stanzasWrapper = card.querySelector('.stanzas-wrapper');
+      if (stanzasWrapper) {
+        const questionText = unsentStep === 1
+          ? 'How many toes do the two of us have?'
+          : "Who's shotglass?";
+
+        stanzasWrapper.innerHTML = `
+          <div class="unsent-letter-card">
+            <div class="lock-step-indicator">Question ${unsentStep} of 2</div>
+            <h3 class="lock-question">${questionText}</h3>
+            <form class="lock-form" id="lockForm">
+              <div class="lock-input-group">
+                <input type="text" class="lock-input" id="lockInput" placeholder="Enter answer..." autocomplete="off" required />
+                <button type="submit" class="lock-btn">Submit</button>
+              </div>
+              <div class="lock-error" id="lockError">Incorrect answer. Try again.</div>
+            </form>
+          </div>
+        `;
+
+        const formEl = stanzasWrapper.querySelector('#lockForm');
+        const inputEl = stanzasWrapper.querySelector('#lockInput');
+        const errorEl = stanzasWrapper.querySelector('#lockError');
+
+        if (formEl) {
+          formEl.addEventListener('submit', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const val = inputEl.value.trim().toLowerCase();
+
+            if (unsentStep === 1) {
+              if (val === '12' || val === 'twelve') {
+                unsentStep = 2;
+                state.expandedIds.add('unsent-letter');
+                renderUnsentLetterSection();
+              } else {
+                errorEl.classList.add('show');
+                inputEl.select();
+              }
+            } else if (unsentStep === 2) {
+              const validGrandmaAnswers = ['grandma', 'grandmas', "grandma's", 'grandma’s'];
+              if (validGrandmaAnswers.includes(val)) {
+                unsentStep = 'unlocked';
+                sessionStorage.setItem('unsent_letter_unlocked', 'true');
+                state.expandedIds.add('unsent-letter');
+                renderUnsentLetterSection();
+              } else {
+                errorEl.classList.add('show');
+                inputEl.select();
+              }
+            }
+          });
+        }
+      }
+    }
 
     // Click header to toggle card
     const headerBtn = card.querySelector('.poem-header');

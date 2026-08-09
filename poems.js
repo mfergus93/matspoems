@@ -734,14 +734,35 @@ const UNSENT_LETTER_DATA = {
   id: "unsent-letter",
   title: "Unsent Letter",
   date: "2026-08-08",
+  tags: ["Unsent", "Personal"],
+  excerpt: "Emma, You were so sweet to me, and I was so mean to you...",
   stanzas: [
     [
-      "I wrote this where no one else would look,",
-      "kept inside the silence of a house with no windows."
+      "Emma,"
     ],
     [
-      "Some things are meant to be kept,",
-      "and some things are meant only for you."
+      "You were so sweet to me, and I was so mean to you."
+    ],
+    [
+      "I'm glad it happened. You were a bright spot, and I didn't realize how much I needed one. I was happy keeping it light. It was when we got too close that fear got the better of me. It touched an old wound, and I ended up reacting to the past instead of to you."
+    ],
+    [
+      "In that moment I wish I'd just told you I cared, instead of analyzing us out loud and pushing you away. The crashing out after was grief, not who I am. I'd lost someone I cared about more than I'd let on."
+    ],
+    [
+      "I spent a long time convincing everyone, including myself, that I couldn't be hurt. But I could be. I was. I'm in therapy now, learning not to shut down what I feel."
+    ],
+    [
+      "You mattered to me. I didn't make that up, and neither did you."
+    ],
+    [
+      "If you're ever up for it, I'd like to talk someday, and see if there's a way back to what we had before I shut down. No promises asked."
+    ],
+    [
+      "And yeah. I miss our stupid banter."
+    ],
+    [
+      "Matt"
     ]
   ]
 };
