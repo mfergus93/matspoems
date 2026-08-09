@@ -109,13 +109,13 @@ document.addEventListener('DOMContentLoaded', () => {
     if (poem.id === 'unsent-letter' && unsentStep !== 'unlocked') {
       const stanzasWrapper = card.querySelector('.stanzas-wrapper');
       if (stanzasWrapper) {
-        const questionText = unsentStep === 1
-          ? 'What is your name?'
-          : "Who's shotglass?";
+        let questionText = 'What is your name?';
+        if (unsentStep === 2) questionText = 'How many toes do we have together?';
+        if (unsentStep === 3) questionText = "Who's shotglass?";
 
         stanzasWrapper.innerHTML = `
           <div class="unsent-letter-card">
-            <div class="lock-step-indicator">Question ${unsentStep} of 2</div>
+            <div class="lock-step-indicator">Question ${unsentStep} of 3</div>
             <h3 class="lock-question">${questionText}</h3>
             <form class="lock-form" id="lockForm">
               <div class="lock-input-group">
@@ -147,6 +147,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 inputEl.select();
               }
             } else if (unsentStep === 2) {
+              if (val === '12' || val === 'twelve') {
+                unsentStep = 3;
+                state.expandedIds.add('unsent-letter');
+                renderUnsentLetterSection();
+              } else {
+                errorEl.classList.add('show');
+                inputEl.select();
+              }
+            } else if (unsentStep === 3) {
               const validGrandmaAnswers = ['grandma', 'grandmas', "grandma's", 'grandma’s'];
               if (validGrandmaAnswers.includes(val)) {
                 unsentStep = 'unlocked';
