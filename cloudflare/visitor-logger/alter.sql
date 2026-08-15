@@ -1,3 +1,2 @@
-ALTER TABLE visits ADD COLUMN city TEXT;
-ALTER TABLE visits ADD COLUMN region TEXT;
-ALTER TABLE visits ADD COLUMN postal_code TEXT;
+-- Legacy migration retained for reference only.
+-- Existing installations should apply migrations/0001_harden_logging.sql.

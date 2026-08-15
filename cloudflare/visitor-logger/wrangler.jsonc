@@ -8,6 +8,10 @@
     {
       "pattern": "matspoems.com/*",
       "zone_name": "matspoems.com"
+    },
+    {
+      "pattern": "www.matspoems.com/*",
+      "zone_name": "matspoems.com"
     }
   ],
   "d1_databases": [
@@ -18,7 +22,8 @@
     }
   ],
   "vars": {
-    "RETENTION_DAYS": "30"
+    "RETENTION_DAYS": "30",
+    "SITE_NAME": "matspoems.com"
   },
   "triggers": {
     "crons": ["17 4 * * *"]
