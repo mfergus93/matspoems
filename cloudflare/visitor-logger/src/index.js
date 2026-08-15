@@ -63,6 +63,8 @@ function normalizeSource(url, referrer) {
   if (!referrer) return "direct";
   try {
     const host = new URL(referrer).hostname.replace(/^www\./, "").toLowerCase();
+    const siteHost = url.hostname.replace(/^www\./, "").toLowerCase();
+    if (host === siteHost) return "internal";
     if (/facebook\.com|fb\.com|l\.facebook\.com/.test(host)) return "facebook";
     if (/linkedin\.com|lnkd\.in/.test(host)) return "linkedin";
     if (/google\./.test(host)) return "google";
@@ -71,6 +73,10 @@ function normalizeSource(url, referrer) {
   } catch {
     return "direct";
   }
+}
+
+function isReferredSource(source) {
+  return Boolean(source && source !== "direct" && source !== "internal");
 }
 
 function attributionData(request, url) {
@@ -84,7 +90,10 @@ function attributionData(request, url) {
 }
 
 function safeReferrer(request) {
-  const raw = request.headers.get("Referer");
+  return sanitizeReferrer(request.headers.get("Referer"));
+}
+
+function sanitizeReferrer(raw) {
   if (!raw) return null;
   try {
     const ref = new URL(raw);
@@ -128,6 +137,9 @@ function classifyRequest(request, url) {
   if (request.headers.get("Accept-Language")) { score += 5; reasons.push("accept-language present"); }
   if (request.headers.get("Sec-CH-UA")) { score += 5; reasons.push("client hints present"); }
   if (asn && CLOUD_ASNS.has(asn)) { score -= 20; reasons.push(`hosting ASN AS${asn}`); }
+  else if (/amazon|google cloud|microsoft|azure|digitalocean|hetzner|linode|akamai|ovh|vultr|choopa|hostinger|m247|oracle cloud|fly\.io|fastly|leaseweb|contabo/i.test(asOrganization)) {
+    score -= 20; reasons.push("hosting network organization");
+  }
   if (isExternalReferrer(request, url)) { score += 10; reasons.push("external referrer"); }
   if (CLAIMED_BOT_UA_RE.test(ua)) { score -= 20; reasons.push("unverified crawler claim"); }
   if (Number.isFinite(request.cf?.botManagement?.score)) {
@@ -195,7 +207,7 @@ async function logSecurityEvent(data, env) {
 }
 
 async function logVisit(data, identity, attribution, env) {
-  const referred = attribution.source !== "direct" ? 1 : 0;
+  const referred = isReferredSource(attribution.source) ? 1 : 0;
   await env.VISITOR_DB.batch([
     env.VISITOR_DB.prepare(
     `INSERT INTO visits
@@ -206,7 +218,9 @@ async function logVisit(data, identity, attribution, env) {
     env.VISITOR_DB.prepare(
       `INSERT INTO visitor_profiles (visitor_id, first_seen_at, last_seen_at, first_source, last_source, first_referrer, last_referrer, last_referred_at, known_referred_visitor)
        VALUES (?1, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'), ?2, ?2, ?3, ?3, CASE WHEN ?4=1 THEN strftime('%Y-%m-%dT%H:%M:%fZ','now') END, ?4)
-       ON CONFLICT(visitor_id) DO UPDATE SET last_seen_at=excluded.last_seen_at, last_source=excluded.last_source, last_referrer=excluded.last_referrer,
+       ON CONFLICT(visitor_id) DO UPDATE SET last_seen_at=excluded.last_seen_at,
+         last_source=CASE WHEN excluded.last_source='internal' THEN visitor_profiles.last_source ELSE excluded.last_source END,
+         last_referrer=CASE WHEN excluded.last_source='internal' THEN visitor_profiles.last_referrer ELSE excluded.last_referrer END,
          last_referred_at=CASE WHEN excluded.known_referred_visitor=1 THEN excluded.last_seen_at ELSE visitor_profiles.last_referred_at END,
          known_referred_visitor=MAX(visitor_profiles.known_referred_visitor, excluded.known_referred_visitor)`
     ).bind(identity.visitorId, attribution.source, data.referrer, referred),
@@ -228,7 +242,7 @@ async function readLogs(request, env, url) {
   const requested = Number.parseInt(url.searchParams.get("limit") || "100", 10);
   const limit = Number.isFinite(requested) ? Math.min(Math.max(requested, 1), MAX_RESULTS) : 100;
   const ip = url.searchParams.get("ip");
-  const columns = "id, visited_at, ip_address, country, city, region, postal_code, path, referrer, user_agent, score, confidence, category, reasons, asn, as_organization, verified_bot";
+  const columns = "id, visited_at, ip_address, country, city, region, postal_code, path, referrer, user_agent, score, confidence, category, reasons, asn, as_organization, verified_bot, visitor_id, session_id, source, utm_source, utm_medium, utm_campaign, classifier_version, bot_score, ja3_hash, ja4, js_detection_passed";
   const statement = ip
     ? env.VISITOR_DB.prepare(`SELECT ${columns} FROM visits WHERE ip_address = ?1 ORDER BY visited_at DESC LIMIT ?2`).bind(ip, limit)
     : env.VISITOR_DB.prepare(`SELECT ${columns} FROM visits ORDER BY visited_at DESC LIMIT ?1`).bind(limit);
@@ -245,6 +259,7 @@ function scoreStoredVisit(visit) {
   if (reasons.includes("client hints present")) score += 5;
   if (reasons.includes("external referrer")) score += 10;
   if (reasons.some((reason) => reason.startsWith("hosting ASN"))) score -= 20;
+  if (reasons.includes("hosting network organization")) score -= 20;
   if (reasons.includes("unverified crawler claim")) score -= 20;
   if (reasons.includes("low Cloudflare bot score")) score -= 30;
   if (reasons.includes("high Cloudflare bot score")) score += 5;
@@ -347,13 +362,22 @@ async function evaluateLiveSession(identity, env, siteName) {
     const claimed = await env.VISITOR_DB.prepare(`UPDATE sessions SET alerted_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE session_id=?1 AND alerted_at IS NULL`).bind(identity.sessionId).run();
     if (Number(claimed.meta?.changes || 0) === 1) {
       const target = TARGET_CITIES.has((session.city || "").toLowerCase().trim()) || TARGET_ZIPS.has((session.postal_code || "").trim());
-      await sendEmail(env, siteName, `${target ? "Target-area " : ""}probable human on ${siteName}`, [
-        `Probable human visitor on ${siteName}`, `Location: ${session.city || "Unknown"}, ${session.region || ""} ${session.postal_code || ""}`,
-        `Source: ${storedSession.source || "direct"}`, `Referrer: ${storedSession.referrer || "none"}`,
-        `Campaign: ${storedSession.utm_campaign || "none"}`, `Entry: ${storedSession.entry_path}`,
-        `Device: ${parseDeviceBrowser(session.user_agent)}`, `Pages: ${session.pages}; routes: ${session.distinctRoutes}; observed span: ${session.durationSeconds}s`,
-        `Confidence: ${result.score}%`, `Why: ${result.reasons.join("; ")}`,
-      ].join("\n"));
+      let sent = false;
+      try {
+        sent = await sendEmail(env, siteName, `${target ? "Target-area " : ""}probable human on ${siteName}`, [
+          `Probable human visitor on ${siteName}`, `Location: ${session.city || "Unknown"}, ${session.region || ""} ${session.postal_code || ""}`,
+          `Source: ${storedSession.source || "direct"}`, `Referrer: ${storedSession.referrer || "none"}`,
+          `Campaign: ${storedSession.utm_campaign || "none"}`, `Entry: ${storedSession.entry_path}`,
+          `Device: ${parseDeviceBrowser(session.user_agent)}`, `Pages: ${session.pages}; routes: ${session.distinctRoutes}; observed span: ${session.durationSeconds}s`,
+          `Confidence: ${result.score}%`, `Why: ${result.reasons.join("; ")}`,
+        ].join("\n"));
+      } catch (error) {
+        console.error("Real-time alert failed", error);
+      }
+      if (!sent) {
+        await env.VISITOR_DB.prepare(`UPDATE sessions SET alerted_at=NULL WHERE session_id=?1`).bind(identity.sessionId).run();
+        return result;
+      }
       await env.VISITOR_DB.prepare(
         `INSERT INTO classification_events (occurred_at, visitor_id, session_id, event_type, classifier_version, score, confidence, reasons)
          VALUES (strftime('%Y-%m-%dT%H:%M:%fZ','now'), ?1, ?2, 'alert_sent', ?3, ?4, 'human', ?5)`
@@ -361,6 +385,16 @@ async function evaluateLiveSession(identity, env, siteName) {
     }
   }
   return result;
+}
+
+function validateEngagement(eventType, claimedSeconds, startedAt, now = Date.now()) {
+  const started = Date.parse(startedAt || "");
+  const elapsedSeconds = Number.isFinite(started) ? Math.max(0, Math.floor((now - started) / 1000)) : 0;
+  const claimed = Math.min(Math.max(Number(claimedSeconds || 0), 0), 3600);
+  if (eventType === "visible_10s" && elapsedSeconds < 9) return { eventType: "rejected_visible_10s", visibleSeconds: 0 };
+  if (eventType === "visible_20s" && elapsedSeconds < 18) return { eventType: "rejected_visible_20s", visibleSeconds: 0 };
+  if (eventType === "page_hidden") return { eventType, visibleSeconds: Math.min(claimed, elapsedSeconds) };
+  return { eventType, visibleSeconds: claimed };
 }
 
 async function handleAnalytics(request, env, siteName, identity) {
@@ -372,15 +406,16 @@ async function handleAnalytics(request, env, siteName, identity) {
   try { payload = await request.json(); } catch { return new Response("Bad Request", { status: 400 }); }
   if (!ALLOWED_EVENTS.has(payload.event)) return new Response("Bad Request", { status: 400 });
   const path = clampText(String(payload.path || "/").split("?")[0], 500);
-  const visibleSeconds = Math.min(Math.max(Number(payload.visible_seconds || 0), 0), 3600);
-  const browserReferrer = clampText(payload.referrer, 500);
+  const storedSession = await env.VISITOR_DB.prepare(`SELECT started_at FROM sessions WHERE session_id=?1`).bind(identity.sessionId).first();
+  const validated = validateEngagement(payload.event, payload.visible_seconds, storedSession?.started_at);
+  const browserReferrer = sanitizeReferrer(payload.referrer);
   const browserSource = normalizeSource(new URL(request.url), browserReferrer);
   await env.VISITOR_DB.batch([
     env.VISITOR_DB.prepare(
     `INSERT INTO analytics_events (occurred_at, visitor_id, session_id, event_type, path, visible_seconds, referrer, classifier_version)
      VALUES (strftime('%Y-%m-%dT%H:%M:%fZ','now'), ?1, ?2, ?3, ?4, ?5, ?6, ?7)`
-    ).bind(identity.visitorId, identity.sessionId, payload.event, path, visibleSeconds, browserReferrer, CLASSIFIER_VERSION),
-    ...(browserSource !== "direct" ? [
+    ).bind(identity.visitorId, identity.sessionId, validated.eventType, path, validated.visibleSeconds, browserReferrer, CLASSIFIER_VERSION),
+    ...(isReferredSource(browserSource) ? [
       env.VISITOR_DB.prepare(`UPDATE sessions SET source=CASE WHEN source='direct' THEN ?1 ELSE source END, referrer=COALESCE(referrer, ?2) WHERE session_id=?3`).bind(browserSource, browserReferrer, identity.sessionId),
       env.VISITOR_DB.prepare(`UPDATE visitor_profiles SET known_referred_visitor=1, last_source=?1, last_referrer=?2, last_referred_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE visitor_id=?3`).bind(browserSource, browserReferrer, identity.visitorId),
     ] : []),
@@ -438,7 +473,7 @@ function secureOriginResponse(response, identity, siteName) {
   return secured;
 }
 
-export { buildSessions, classifyRequest, classifySessionEvidence, normalizeSource, parseDeviceBrowser, scoreStoredVisit };
+export { buildSessions, classifyRequest, classifySessionEvidence, isReferredSource, normalizeSource, parseDeviceBrowser, sanitizeReferrer, scoreStoredVisit, validateEngagement };
 
 export default {
   async fetch(request, env, ctx) {
@@ -486,6 +521,7 @@ export default {
         env.VISITOR_DB.prepare(`DELETE FROM analytics_events WHERE occurred_at < strftime('%Y-%m-%dT%H:%M:%fZ','now', ?1)`).bind(age).run(),
         env.VISITOR_DB.prepare(`DELETE FROM classification_events WHERE occurred_at < strftime('%Y-%m-%dT%H:%M:%fZ','now', ?1)`).bind(age).run(),
         env.VISITOR_DB.prepare(`DELETE FROM sessions WHERE started_at < strftime('%Y-%m-%dT%H:%M:%fZ','now', ?1)`).bind(age).run(),
+        env.VISITOR_DB.prepare(`DELETE FROM visitor_profiles WHERE last_seen_at < strftime('%Y-%m-%dT%H:%M:%fZ','now', ?1)`).bind(age).run(),
       ]);
     })());
   },

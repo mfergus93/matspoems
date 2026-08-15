@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildSessions, classifyRequest, classifySessionEvidence, normalizeSource, parseDeviceBrowser } from "../src/index.js";
+import { readFile } from "node:fs/promises";
+import { buildSessions, classifyRequest, classifySessionEvidence, isReferredSource, normalizeSource, parseDeviceBrowser, sanitizeReferrer, validateEngagement } from "../src/index.js";
 
 const base = {
   ip_address: "203.0.113.1", user_agent: "Mozilla/5.0", country: "US",
@@ -39,19 +40,19 @@ test("three paced pages over five minutes are human", () => {
 });
 
 test("cloud ASN single page is not human", () => {
-  const request = new Request("https://matferg.com/", { headers: { Accept: "text/html", "Accept-Language": "en", "Sec-Fetch-Dest": "document" } });
+  const request = new Request("https://matspoems.com/", { headers: { Accept: "text/html", "Accept-Language": "en", "Sec-Fetch-Dest": "document" } });
   Object.defineProperty(request, "cf", { value: { asn: 16509, asOrganization: "Amazon" } });
   assert.notEqual(classifyRequest(request, new URL(request.url)).confidence, "human");
 });
 
 test("Cloudflare verified Googlebot remains verified", () => {
-  const request = new Request("https://matferg.com/", { headers: { "User-Agent": "Googlebot" } });
+  const request = new Request("https://matspoems.com/", { headers: { "User-Agent": "Googlebot" } });
   Object.defineProperty(request, "cf", { value: { botManagement: { verifiedBot: true } } });
   assert.equal(classifyRequest(request, new URL(request.url)).confidence, "verified_bot");
 });
 
 test("low Cloudflare bot score is a strong negative when available", () => {
-  const request = new Request("https://matferg.com/", { headers: { Accept: "text/html", "Accept-Language": "en", "Sec-Fetch-Dest": "document" } });
+  const request = new Request("https://matspoems.com/", { headers: { Accept: "text/html", "Accept-Language": "en", "Sec-Fetch-Dest": "document" } });
   Object.defineProperty(request, "cf", { value: { botManagement: { score: 10, verifiedBot: false } } });
   assert.equal(classifyRequest(request, new URL(request.url)).confidence, "bot");
 });
@@ -71,7 +72,29 @@ test("engagement and prior referral are explicit session evidence", () => {
 });
 
 test("source normalization prefers allowlisted UTM and recognizes Facebook", () => {
-  assert.equal(normalizeSource(new URL("https://matferg.com/?utm_source=Newsletter"), null), "newsletter");
-  assert.equal(normalizeSource(new URL("https://matferg.com/"), "https://l.facebook.com/path?q=x"), "facebook");
+  assert.equal(normalizeSource(new URL("https://matspoems.com/?utm_source=Newsletter"), null), "newsletter");
+  assert.equal(normalizeSource(new URL("https://matspoems.com/"), "https://l.facebook.com/path?q=x"), "facebook");
+});
+
+test("same-site referrer is internal and never creates referral history", () => {
+  const source = normalizeSource(new URL("https://matspoems.com/"), "https://www.matspoems.com/");
+  assert.equal(source, "internal");
+  assert.equal(isReferredSource(source), false);
+});
+
+test("browser referrer query and fragment are removed", () => {
+  assert.equal(sanitizeReferrer("https://matspoems.com/foo?secret=123#part"), "https://matspoems.com/foo");
+});
+
+test("premature visibility claims are rejected and hidden time is capped", () => {
+  const start = "2026-08-15T10:00:00.000Z";
+  assert.equal(validateEngagement("visible_20s", 20, start, Date.parse(start) + 1000).eventType, "rejected_visible_20s");
+  assert.equal(validateEngagement("visible_20s", 20, start, Date.parse(start) + 19000).eventType, "visible_20s");
+  assert.equal(validateEngagement("page_hidden", 999, start, Date.parse(start) + 5000).visibleSeconds, 5);
+});
+
+test("visitor profiles are included in retention cleanup", async () => {
+  const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
+  assert.match(source, /DELETE FROM visitor_profiles WHERE last_seen_at/);
 });
 
