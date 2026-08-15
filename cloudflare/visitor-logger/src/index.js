@@ -140,7 +140,7 @@ async function logVisit(data, env, siteName) {
   const target = TARGET_CITIES.has((data.city || "").toLowerCase().trim()) || TARGET_ZIPS.has((data.postalCode || "").trim());
   if (data.confidence !== "human" || !target) return;
   const recent = await env.VISITOR_DB.prepare(
-    `SELECT COUNT(*) AS count FROM visits WHERE ip_address = ?1 AND visited_at >= datetime('now','-24 hours')`
+    `SELECT COUNT(*) AS count FROM visits WHERE ip_address = ?1 AND visited_at >= strftime('%Y-%m-%dT%H:%M:%fZ','now','-24 hours')`
   ).bind(data.ip).first();
   if (Number(recent?.count || 0) !== 1) return;
   await sendEmail(env, siteName, `Target visitor: ${data.city || "Unknown"}, ${data.region || ""}`, [
@@ -184,8 +184,8 @@ function buildSessions(visits) {
 
 async function sendDailyDigest(env, siteName) {
   const [{ results: visits }, security] = await Promise.all([
-    env.VISITOR_DB.prepare(`SELECT visited_at, ip_address, country, city, region, postal_code, path, referrer, user_agent, score, confidence, category, reasons FROM visits WHERE visited_at >= datetime('now','-24 hours') ORDER BY visited_at ASC`).all(),
-    env.VISITOR_DB.prepare(`SELECT COUNT(*) AS count FROM security_events WHERE occurred_at >= datetime('now','-24 hours')`).first(),
+    env.VISITOR_DB.prepare(`SELECT visited_at, ip_address, country, city, region, postal_code, path, referrer, user_agent, score, confidence, category, reasons FROM visits WHERE visited_at >= strftime('%Y-%m-%dT%H:%M:%fZ','now','-24 hours') ORDER BY visited_at ASC`).all(),
+    env.VISITOR_DB.prepare(`SELECT COUNT(*) AS count FROM security_events WHERE occurred_at >= strftime('%Y-%m-%dT%H:%M:%fZ','now','-24 hours')`).first(),
   ]);
   const sessions = buildSessions(visits);
   const humans = sessions.filter((s) => s.confidence === "human");
