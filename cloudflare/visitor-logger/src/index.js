@@ -52,6 +52,16 @@ function safeReferrer(request) {
   }
 }
 
+function isExternalReferrer(request, url) {
+  const raw = request.headers.get("Referer");
+  if (!raw) return false;
+  try {
+    return new URL(raw).hostname.replace(/^www\./, "") !== url.hostname.replace(/^www\./, "");
+  } catch {
+    return false;
+  }
+}
+
 function classifyRequest(request, url) {
   const ua = request.headers.get("User-Agent") || "";
   const asn = request.cf?.asn ? Number(request.cf.asn) : null;
@@ -68,16 +78,18 @@ function classifyRequest(request, url) {
     return { score: 10, confidence: "verified_bot", category: "verified_bot", reasons: ["Cloudflare verified bot"], blocked: false, asn, asOrganization, verifiedBot };
   }
 
-  let score = 50;
+  // Request scores are deliberately conservative. Human classification is
+  // determined from the complete session, not a single browser-looking hit.
+  let score = 25;
   const reasons = [];
-  if (isPageVisit(request, url)) { score += 25; reasons.push("document navigation"); }
-  if (request.headers.get("Accept-Language")) { score += 15; reasons.push("accept-language present"); }
-  if (request.headers.get("Sec-CH-UA")) { score += 10; reasons.push("client hints present"); }
-  if (asn && CLOUD_ASNS.has(asn)) { score -= 35; reasons.push(`hosting ASN AS${asn}`); }
-  if (safeReferrer(request)) { score += 5; reasons.push("referrer present"); }
-  if (CLAIMED_BOT_UA_RE.test(ua)) { score -= 25; reasons.push("unverified crawler claim"); }
+  if (isPageVisit(request, url)) { score += 10; reasons.push("document navigation"); }
+  if (request.headers.get("Accept-Language")) { score += 5; reasons.push("accept-language present"); }
+  if (request.headers.get("Sec-CH-UA")) { score += 5; reasons.push("client hints present"); }
+  if (asn && CLOUD_ASNS.has(asn)) { score -= 20; reasons.push(`hosting ASN AS${asn}`); }
+  if (isExternalReferrer(request, url)) { score += 10; reasons.push("external referrer"); }
+  if (CLAIMED_BOT_UA_RE.test(ua)) { score -= 20; reasons.push("unverified crawler claim"); }
   score = Math.max(0, Math.min(100, score));
-  const confidence = score >= 70 ? "human" : score < 30 ? "bot" : "uncertain";
+  const confidence = score < 20 ? "bot" : "uncertain";
   return { score, confidence, category: confidence, reasons, blocked: false, asn, asOrganization, verifiedBot };
 }
 
@@ -98,7 +110,7 @@ function requestData(request, url, result) {
 function parseDeviceBrowser(ua) {
   if (!ua) return "Unknown";
   const browser = ua.includes("Edg/") ? "Edge" : ua.includes("Chrome/") ? "Chrome" : ua.includes("Firefox/") ? "Firefox" : ua.includes("Safari/") ? "Safari" : "Browser";
-  const os = ua.includes("Windows") ? "Windows" : ua.includes("Mac OS") ? "Mac" : /iPhone|iPad/.test(ua) ? "iOS" : ua.includes("Android") ? "Android" : ua.includes("Linux") ? "Linux" : "Desktop";
+  const os = ua.includes("Windows") ? "Windows" : /iPhone|iPad/.test(ua) ? "iOS" : ua.includes("Android") ? "Android" : ua.includes("Mac OS") ? "Mac" : ua.includes("Linux") ? "Linux" : "Desktop";
   return `${browser}/${os}`;
 }
 
@@ -130,25 +142,13 @@ async function logSecurityEvent(data, env) {
   ).bind(data.ip, data.country, data.city, data.region, data.postalCode, data.path, data.userAgent, data.category, data.reasons.join("; "), data.asn, clampText(data.asOrganization, 250)).run();
 }
 
-async function logVisit(data, env, siteName) {
+async function logVisit(data, env) {
   await env.VISITOR_DB.prepare(
     `INSERT INTO visits
       (visited_at, ip_address, country, city, region, postal_code, path, referrer, user_agent, score, confidence, category, reasons, asn, as_organization, verified_bot)
      VALUES (strftime('%Y-%m-%dT%H:%M:%fZ','now'), ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)`
   ).bind(data.ip, data.country, data.city, data.region, data.postalCode, data.path, data.referrer, data.userAgent, data.score, data.confidence, data.category, data.reasons.join("; "), data.asn, clampText(data.asOrganization, 250), data.verifiedBot ? 1 : 0).run();
 
-  const target = TARGET_CITIES.has((data.city || "").toLowerCase().trim()) || TARGET_ZIPS.has((data.postalCode || "").trim());
-  if (data.confidence !== "human" || !target) return;
-  const recent = await env.VISITOR_DB.prepare(
-    `SELECT COUNT(*) AS count FROM visits WHERE ip_address = ?1 AND visited_at >= strftime('%Y-%m-%dT%H:%M:%fZ','now','-24 hours')`
-  ).bind(data.ip).first();
-  if (Number(recent?.count || 0) !== 1) return;
-  await sendEmail(env, siteName, `Target visitor: ${data.city || "Unknown"}, ${data.region || ""}`, [
-    `A likely human visitor from a target area visited ${siteName}.`,
-    `Location: ${data.city || "Unknown"}, ${data.region || ""} ${data.postalCode || ""} (${data.country || ""})`,
-    `IP: ${data.ip}`, `Path: ${data.path}`, `Device: ${parseDeviceBrowser(data.userAgent)}`,
-    `Referrer: ${data.referrer || "Direct"}`, `Confidence: ${data.score}% (${data.reasons.join("; ")})`,
-  ].join("\n"));
 }
 
 async function readLogs(request, env, url) {
@@ -165,38 +165,94 @@ async function readLogs(request, env, url) {
   return Response.json({ count: results.length, visits: results }, { headers: { "Cache-Control": "no-store" } });
 }
 
+function scoreStoredVisit(visit) {
+  const reasons = String(visit.reasons || "").split("; ");
+  if (reasons.includes("Cloudflare verified bot")) return 10;
+  let score = 25;
+  if (reasons.includes("document navigation")) score += 10;
+  if (reasons.includes("accept-language present")) score += 5;
+  if (reasons.includes("client hints present")) score += 5;
+  if (reasons.includes("external referrer")) score += 10;
+  if (reasons.some((reason) => reason.startsWith("hosting ASN"))) score -= 20;
+  if (reasons.includes("unverified crawler claim")) score -= 20;
+  return Math.max(0, Math.min(100, score));
+}
+
 function buildSessions(visits) {
-  const sessions = new Map();
-  for (const visit of visits) {
+  const SESSION_GAP_MS = 30 * 60 * 1000;
+  const active = new Map();
+  const sessions = [];
+  const sorted = [...visits].sort((a, b) => Date.parse(a.visited_at) - Date.parse(b.visited_at));
+
+  for (const visit of sorted) {
     const key = `${visit.ip_address}|${visit.user_agent || ""}`;
-    const current = sessions.get(key);
-    if (!current) {
-      sessions.set(key, { ...visit, pages: 1, paths: [visit.path] });
-    } else {
-      current.pages += 1;
-      if (!current.paths.includes(visit.path)) current.paths.push(visit.path);
-      current.score = Math.max(current.score || 0, visit.score || 0);
-      if (visit.confidence === "human") current.confidence = "human";
+    const time = Date.parse(visit.visited_at);
+    let session = active.get(key);
+    if (!session || !Number.isFinite(time) || time - session.lastTime > SESSION_GAP_MS) {
+      session = { ...visit, firstTime: time, lastTime: time, pages: 0, paths: [], requestScores: [], requestReasons: [] };
+      sessions.push(session);
+      active.set(key, session);
     }
+    session.pages += 1;
+    session.lastTime = time;
+    if (!session.paths.includes(visit.path)) session.paths.push(visit.path);
+    // Recompute from stored evidence so records created by older scoring
+    // versions cannot retain an inflated human score in a new digest.
+    session.requestScores.push(scoreStoredVisit(visit));
+    if (visit.reasons) session.requestReasons.push(...String(visit.reasons).split("; "));
   }
-  return [...sessions.values()];
+
+  for (const session of sessions) {
+    session.durationSeconds = Math.max(0, Math.round((session.lastTime - session.firstTime) / 1000));
+    session.distinctRoutes = session.paths.length;
+    let score = session.requestScores.length ? Math.max(...session.requestScores) : 25;
+    const reasons = [...new Set(session.requestReasons.filter(Boolean))];
+
+    const impossibleBurst = session.pages >= 3 && session.durationSeconds <= 2;
+    const routeSweep = session.distinctRoutes >= 5 && session.durationSeconds < 10;
+    if (impossibleBurst || routeSweep) {
+      score = 0;
+      reasons.push(impossibleBurst ? "impossible page velocity" : "rapid route sweep");
+    } else {
+      if (session.pages >= 2 && session.distinctRoutes >= 2 && session.durationSeconds >= 15) {
+        score += 25;
+        reasons.push("multiple paced page transitions");
+      } else if (session.pages >= 2 && session.distinctRoutes >= 2 && session.durationSeconds >= 5) {
+        score += 15;
+        reasons.push("paced page transitions");
+      }
+      if (session.durationSeconds >= 20) {
+        score += 10;
+        reasons.push("meaningful elapsed time");
+      }
+    }
+    score = Math.max(0, Math.min(100, score));
+    session.score = score;
+    session.confidence = score >= 65 ? "human" : score < 20 ? "bot" : "uncertain";
+    session.reasons = reasons;
+  }
+  return sessions;
 }
 
 async function sendDailyDigest(env, siteName) {
   const [{ results: visits }, security] = await Promise.all([
-    env.VISITOR_DB.prepare(`SELECT visited_at, ip_address, country, city, region, postal_code, path, referrer, user_agent, score, confidence, category, reasons FROM visits WHERE visited_at >= strftime('%Y-%m-%dT%H:%M:%fZ','now','-24 hours') ORDER BY visited_at ASC`).all(),
+    env.VISITOR_DB.prepare(`SELECT visited_at, ip_address, country, city, region, postal_code, path, referrer, user_agent, score, confidence, category, reasons, asn, as_organization FROM visits WHERE visited_at >= strftime('%Y-%m-%dT%H:%M:%fZ','now','-24 hours') ORDER BY visited_at ASC`).all(),
     env.VISITOR_DB.prepare(`SELECT COUNT(*) AS count FROM security_events WHERE occurred_at >= strftime('%Y-%m-%dT%H:%M:%fZ','now','-24 hours')`).first(),
   ]);
   const sessions = buildSessions(visits);
   const humans = sessions.filter((s) => s.confidence === "human");
   const uncertain = sessions.filter((s) => s.confidence === "uncertain");
-  const bots = sessions.filter((s) => s.confidence === "verified_bot");
-  const lines = humans.length ? humans.map((s) => `${s.visited_at} | ${s.city || "Unknown"}, ${s.region || ""} | ${s.pages} page(s) | ${s.paths.join(", ")} | ${parseDeviceBrowser(s.user_agent)} | ${s.score}%`).join("\n") : "No probable human sessions recorded.";
+  const bots = sessions.filter((s) => s.confidence === "bot");
+  const targetHumans = humans.filter((s) => TARGET_CITIES.has((s.city || "").toLowerCase().trim()) || TARGET_ZIPS.has((s.postal_code || "").trim()));
+  const formatSession = (s) => `${s.visited_at} | ${s.city || "Unknown"}, ${s.region || ""} | ${s.pages} page(s), ${s.distinctRoutes} route(s), ${s.durationSeconds}s | ${s.paths.join(", ")} | ${parseDeviceBrowser(s.user_agent)} | ${s.score}% | ${s.reasons.join("; ")}`;
+  const lines = humans.length ? humans.map(formatSession).join("\n") : "No probable human sessions recorded.";
+  const targetLines = targetHumans.length ? targetHumans.map(formatSession).join("\n") : "No probable target-area human sessions recorded.";
   await sendEmail(env, siteName, `Visitor digest: ${humans.length} human, ${uncertain.length} uncertain`, [
     `Daily visitor report for ${siteName}`, `Probable humans: ${humans.length}`,
-    `Uncertain: ${uncertain.length}`, `Verified bots: ${bots.length}`,
+    `Uncertain: ${uncertain.length}`, `Automated sessions: ${bots.length}`,
     `Blocked scanner/tool requests: ${Number(security?.count || 0)}`, `Logged page views: ${visits.length}`,
-    "", "PROBABLE HUMAN SESSIONS", lines,
+    "", "TARGET-AREA PROBABLE HUMAN SESSIONS", targetLines,
+    "", "ALL PROBABLE HUMAN SESSIONS", lines,
   ].join("\n"));
 }
 
@@ -207,6 +263,8 @@ function secureOriginResponse(response) {
   secured.headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
   return secured;
 }
+
+export { buildSessions, classifyRequest, parseDeviceBrowser, scoreStoredVisit };
 
 export default {
   async fetch(request, env, ctx) {
@@ -233,7 +291,7 @@ export default {
       return new Response("Forbidden", { status: 403, headers: { "Cache-Control": "no-store", "X-Robots-Tag": "noindex" } });
     }
     if (isPageVisit(request, url)) {
-      ctx.waitUntil(logVisit(data, env, siteName).catch((error) => console.error("Visit logging failed", error)));
+      ctx.waitUntil(logVisit(data, env).catch((error) => console.error("Visit logging failed", error)));
     }
     return secureOriginResponse(await fetch(request));
   },
