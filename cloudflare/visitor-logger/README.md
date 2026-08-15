@@ -14,6 +14,16 @@ Daily reporting uses a conservative session classifier. Visits are split after
 and impossible page velocity or rapid route sweeps are classified as automated.
 Target-area visits are highlighted only after session-level evaluation.
 
+The site assigns random first-party visitor and 30-minute session identifiers.
+An allowlisted beacon records page visibility milestones and internal link
+clicks. Referral attribution combines the HTTP referrer, browser referrer, and
+`utm_source`, `utm_medium`, and `utm_campaign`; other query parameters are not
+stored. Each request observation, browser event, classification transition, and
+alert is retained as versioned evidence for later re-evaluation. A session sends
+one real-time email when it first crosses the probable-human threshold.
+
+Run `npm test` for the observed-traffic classifier fixtures.
+
 The `/_visitor-logs` endpoint and both email-test query parameters require
 `Authorization: Bearer <LOG_API_TOKEN>`. Keep that token and `RESEND_API_KEY` in
 Wrangler secrets; never commit them.
