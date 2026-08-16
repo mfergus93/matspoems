@@ -29,6 +29,11 @@ Authenticated audit access is available at
 `/_visitor-audit?session_id=<uuid>`. It returns the session, visits, engagement
 events, classification history, visitor profile, and related security events.
 
+An authenticated `POST /_visitor-retro-report` generates an emailed `retro-v1`
+lookback of all server-recorded external-referral sessions. It deliberately uses
+only evidence present in historical rows and labels results likely human,
+uncertain, or likely automated.
+
 Run `npm test` for the observed-traffic classifier fixtures.
 
 The `/_visitor-logs` endpoint and both email-test query parameters require

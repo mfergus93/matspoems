@@ -1,5 +1,6 @@
 const LOG_PATH = "/_visitor-logs";
 const AUDIT_PATH = "/_visitor-audit";
+const RETRO_REPORT_PATH = "/_visitor-retro-report";
 const ANALYTICS_PATH = "/_analytics";
 const MAX_RESULTS = 500;
 const CLASSIFIER_VERSION = "3.0.0";
@@ -82,6 +83,10 @@ function isReferredSource(source) {
   return Boolean(source && source !== "direct" && source !== "internal");
 }
 
+function isHostingNetwork(asn, organization = "") {
+  return Boolean((asn && CLOUD_ASNS.has(Number(asn))) || /amazon|google cloud|microsoft|azure|digitalocean|hetzner|linode|akamai|ovh|vultr|choopa|hostinger|m247|oracle cloud|fly\.io|fastly|leaseweb|contabo/i.test(organization));
+}
+
 function attributionData(request, url) {
   const referrer = safeReferrer(request);
   const referrerSource = normalizeSource(url, referrer);
@@ -144,7 +149,7 @@ function classifyRequest(request, url) {
   if (request.headers.get("Accept-Language")) { score += 5; reasons.push("accept-language present"); }
   if (request.headers.get("Sec-CH-UA")) { score += 5; reasons.push("client hints present"); }
   if (asn && CLOUD_ASNS.has(asn)) { score -= 20; reasons.push(`hosting ASN AS${asn}`); }
-  else if (/amazon|google cloud|microsoft|azure|digitalocean|hetzner|linode|akamai|ovh|vultr|choopa|hostinger|m247|oracle cloud|fly\.io|fastly|leaseweb|contabo/i.test(asOrganization)) {
+  else if (isHostingNetwork(asn, asOrganization)) {
     score -= 20; reasons.push("hosting network organization");
   }
   if (isExternalReferrer(request, url)) { score += 10; reasons.push("external referrer"); }
@@ -307,13 +312,14 @@ function buildSessions(visits) {
     const time = Date.parse(visit.visited_at);
     let session = active.get(key);
     if (!session || !Number.isFinite(time) || time - session.lastTime > SESSION_GAP_MS) {
-      session = { ...visit, firstTime: time, lastTime: time, pages: 0, paths: [], requestScores: [], requestReasons: [] };
+      session = { ...visit, firstTime: time, lastTime: time, pages: 0, paths: [], referrers: [], requestScores: [], requestReasons: [] };
       sessions.push(session);
       active.set(key, session);
     }
     session.pages += 1;
     session.lastTime = time;
     if (!session.paths.includes(visit.path)) session.paths.push(visit.path);
+    if (visit.referrer && !session.referrers.includes(visit.referrer)) session.referrers.push(visit.referrer);
     // Recompute from stored evidence so records created by older scoring
     // versions cannot retain an inflated human score in a new digest.
     session.requestScores.push(scoreStoredVisit(visit));
@@ -350,6 +356,99 @@ function buildSessions(visits) {
     session.reasons = reasons;
   }
   return sessions;
+}
+
+function externalReferrerForSite(referrers, siteName) {
+  const siteHost = siteName.replace(/^www\./, "").toLowerCase();
+  return (referrers || []).find((referrer) => {
+    try {
+      return new URL(referrer).hostname.replace(/^www\./, "").toLowerCase() !== siteHost;
+    } catch {
+      return false;
+    }
+  }) || null;
+}
+
+function classifyRetroSession(session, siteName) {
+  const externalReferrer = externalReferrerForSite(session.referrers, siteName);
+  if (!externalReferrer) return null;
+  let score = 25;
+  const reasons = ["server-recorded external HTTP referrer"];
+  score += 15;
+  const ua = session.user_agent || "";
+  if (/Mozilla\/5\.0/.test(ua) && !TOOL_UA_RE.test(ua) && !CLAIMED_BOT_UA_RE.test(ua)) {
+    score += 5;
+    reasons.push("browser-format user-agent");
+  }
+  if (isHostingNetwork(session.asn, session.as_organization || "")) {
+    score -= 20;
+    reasons.push("hosting network");
+  }
+  if (Number.isFinite(session.bot_score)) {
+    if (session.bot_score <= 29) { score -= 30; reasons.push("low Cloudflare bot score"); }
+    else if (session.bot_score >= 80) { score += 5; reasons.push("high Cloudflare bot score"); }
+  }
+
+  const scanner = session.paths.some(isScannerPath);
+  const automatedUa = TOOL_UA_RE.test(ua) || CLAIMED_BOT_UA_RE.test(ua) || Boolean(session.verified_bot);
+  const impossibleBurst = session.pages >= 3 && session.durationSeconds <= 2;
+  const routeSweep = session.distinctRoutes >= 5 && session.durationSeconds < 10;
+  if (scanner || automatedUa || impossibleBurst || routeSweep) {
+    score = 0;
+    if (scanner) reasons.push("scanner path");
+    if (automatedUa) reasons.push("bot/tool user-agent or verified bot");
+    if (impossibleBurst) reasons.push("impossible page velocity");
+    if (routeSweep) reasons.push("rapid route sweep");
+  } else {
+    if (session.pages >= 2 && session.distinctRoutes >= 2 && session.durationSeconds >= 15) {
+      score += 20;
+      reasons.push("paced multi-page session");
+    } else if (session.pages >= 2 && session.distinctRoutes >= 2 && session.durationSeconds >= 5) {
+      score += 10;
+      reasons.push("possible paced navigation");
+    }
+    if (session.durationSeconds >= 20) { score += 10; reasons.push("meaningful observed span"); }
+  }
+  score = Math.max(0, Math.min(100, score));
+  const classification = score >= 60 ? "likely_human" : score < 20 ? "likely_automated" : "uncertain";
+  return { ...session, externalReferrer, source: normalizeSource(new URL(`https://${siteName}/`), externalReferrer), score, classification, reasons, classifierVersion: "retro-v1" };
+}
+
+async function sendHistoricReferralReport(request, env, siteName) {
+  if (!isAuthorized(request, env)) return new Response("Unauthorized", { status: 401, headers: { "Cache-Control": "no-store" } });
+  if (request.method !== "POST") return new Response("Method Not Allowed", { status: 405, headers: { Allow: "POST" } });
+  const { results: visits } = await env.VISITOR_DB.prepare(
+    `SELECT visited_at, ip_address, country, city, region, postal_code, path, referrer, user_agent, asn, as_organization, verified_bot, bot_score, session_id
+     FROM visits ORDER BY visited_at ASC LIMIT 20000`
+  ).all();
+  const referred = buildSessions(visits).map((session) => classifyRetroSession(session, siteName)).filter(Boolean);
+  const counts = {
+    likely_human: referred.filter((session) => session.classification === "likely_human").length,
+    uncertain: referred.filter((session) => session.classification === "uncertain").length,
+    likely_automated: referred.filter((session) => session.classification === "likely_automated").length,
+  };
+  const order = { likely_human: 0, uncertain: 1, likely_automated: 2 };
+  referred.sort((a, b) => order[a.classification] - order[b.classification] || Date.parse(a.visited_at) - Date.parse(b.visited_at));
+  const lines = referred.map((session, index) => {
+    const location = [session.city, session.region, session.country].filter(Boolean).join(", ") || "Unknown";
+    const network = [session.asn ? `AS${session.asn}` : null, session.as_organization].filter(Boolean).join(" ") || "Unknown network";
+    return `${index + 1}. ${session.classification.toUpperCase()} | ${session.score}% | ${session.visited_at}\n   IP: ${session.ip_address} | ${location} | ${parseDeviceBrowser(session.user_agent)}\n   Source: ${session.source} | Referrer: ${session.externalReferrer}\n   Entry: ${session.paths[0]} | ${session.pages} page(s), ${session.distinctRoutes} route(s), ${session.durationSeconds}s span | ${network}\n   Why: ${session.reasons.join("; ")}`;
+  });
+  const body = [
+    `Historical external-referral lookback for ${siteName}`,
+    `Classifier: retro-v1 (historically available server evidence only)`,
+    `Generated: ${new Date().toISOString()}`,
+    `Visits examined: ${visits.length}`,
+    `Externally referred sessions: ${referred.length}`,
+    `Likely human: ${counts.likely_human} | Uncertain: ${counts.uncertain} | Likely automated: ${counts.likely_automated}`,
+    "",
+    "Limitations: pre-instrumentation traffic lacks reliable visitor/session IDs, visible engagement, internal clicks, browser corroboration, discarded UTMs, and any bot/fingerprint fields not captured at the time. Same IP/User-Agent sessions are reconstructed with a 30-minute inactivity boundary.",
+    "",
+    ...lines,
+  ].join("\n");
+  const sent = await sendEmail(env, siteName, `Historical external referrals â€” ${siteName} (${referred.length} sessions)`, body);
+  if (!sent) return new Response("Email service unavailable", { status: 503, headers: { "Cache-Control": "no-store" } });
+  return Response.json({ site: siteName, classifier_version: "retro-v1", visits_examined: visits.length, referred_sessions: referred.length, counts, emailed: true }, { headers: { "Cache-Control": "no-store" } });
 }
 
 function classifySessionEvidence(session, events, knownReferredVisitor = false) {
@@ -537,7 +636,7 @@ function secureOriginResponse(response, identity, siteName) {
   return secured;
 }
 
-export { attributionData, buildSessions, classifyRequest, classifySessionEvidence, hostMatches, isReferredSource, normalizeSource, parseDeviceBrowser, sanitizeReferrer, scoreStoredVisit, validateEngagement };
+export { attributionData, buildSessions, classifyRequest, classifyRetroSession, classifySessionEvidence, externalReferrerForSite, hostMatches, isReferredSource, normalizeSource, parseDeviceBrowser, sanitizeReferrer, scoreStoredVisit, validateEngagement };
 
 export default {
   async fetch(request, env, ctx) {
@@ -545,6 +644,7 @@ export default {
     const siteName = env.SITE_NAME || url.hostname.replace(/^www\./, "");
     if (url.pathname === LOG_PATH) return readLogs(request, env, url);
     if (url.pathname === AUDIT_PATH) return readAudit(request, env, url);
+    if (url.pathname === RETRO_REPORT_PATH) return sendHistoricReferralReport(request, env, siteName);
     const identity = visitorIdentity(request);
     if (url.pathname === ANALYTICS_PATH) return handleAnalytics(request, env, siteName, identity);
 

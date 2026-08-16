@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { attributionData, buildSessions, classifyRequest, classifySessionEvidence, isReferredSource, normalizeSource, parseDeviceBrowser, sanitizeReferrer, validateEngagement } from "../src/index.js";
+import { attributionData, buildSessions, classifyRequest, classifyRetroSession, classifySessionEvidence, isReferredSource, normalizeSource, parseDeviceBrowser, sanitizeReferrer, validateEngagement } from "../src/index.js";
 
 const base = {
   ip_address: "203.0.113.1", user_agent: "Mozilla/5.0", country: "US",
@@ -17,7 +17,6 @@ test("two pages in one second stay uncertain", () => {
   const session = buildSessions([visit("2026-08-15T10:00:00.000Z"), visit("2026-08-15T10:00:01.000Z", "/two")])[0];
   assert.equal(session.confidence, "uncertain");
 });
-
 test("three pages in one second are automated", () => {
   const session = buildSessions([visit("2026-08-15T10:00:00.000Z"), visit("2026-08-15T10:00:00.500Z", "/two"), visit("2026-08-15T10:00:01.000Z", "/three")])[0];
   assert.equal(session.confidence, "bot");
@@ -132,5 +131,27 @@ test("complete audit endpoint and scheduled alert retry remain wired", async () 
   assert.match(source, /async function retryPendingAlerts/);
   assert.match(source, /alerted_at IS NULL/);
   assert.match(source, /association: "same_ip_time_window"/);
+});
+
+test("retro-v1 reports only external referrals conservatively", () => {
+  const internal = buildSessions([visit("2026-08-15T10:00:00.000Z", "/", { referrer: "https://matspoems.com/" })])[0];
+  assert.equal(classifyRetroSession(internal, "matspoems.com"), null);
+  const external = buildSessions([visit("2026-08-15T10:00:00.000Z", "/", { referrer: "https://facebook.com/profile" })])[0];
+  assert.equal(classifyRetroSession(external, "matspoems.com").classification, "uncertain");
+});
+
+test("retro-v1 detects referred automation and paced humans", () => {
+  const referred = { referrer: "https://linkedin.com/in/example", user_agent: "Mozilla/5.0" };
+  const burst = buildSessions([
+    visit("2026-08-15T10:00:00.000Z", "/", referred),
+    visit("2026-08-15T10:00:00.500Z", "/two", referred),
+    visit("2026-08-15T10:00:01.000Z", "/three", referred),
+  ])[0];
+  assert.equal(classifyRetroSession(burst, "matspoems.com").classification, "likely_automated");
+  const paced = buildSessions([
+    visit("2026-08-15T10:00:00.000Z", "/", referred),
+    visit("2026-08-15T10:00:30.000Z", "/two", referred),
+  ])[0];
+  assert.equal(classifyRetroSession(paced, "matspoems.com").classification, "likely_human");
 });
 
