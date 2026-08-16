@@ -1,4 +1,5 @@
 const LOG_PATH = "/_visitor-logs";
+const AUDIT_PATH = "/_visitor-audit";
 const ANALYTICS_PATH = "/_analytics";
 const MAX_RESULTS = 500;
 const CLASSIFIER_VERSION = "3.0.0";
@@ -58,8 +59,6 @@ function visitorIdentity(request) {
 }
 
 function normalizeSource(url, referrer) {
-  const explicit = clampText(url.searchParams.get("utm_source"), 80);
-  if (explicit) return explicit.toLowerCase();
   if (!referrer) return "direct";
   try {
     const host = new URL(referrer).hostname.replace(/^www\./, "").toLowerCase();
@@ -81,9 +80,13 @@ function isReferredSource(source) {
 
 function attributionData(request, url) {
   const referrer = safeReferrer(request);
+  const referrerSource = normalizeSource(url, referrer);
+  const utmSource = clampText(url.searchParams.get(ALLOWED_UTM[0]), 80);
   return {
-    source: normalizeSource(url, referrer),
-    utmSource: clampText(url.searchParams.get(ALLOWED_UTM[0]), 80),
+    source: utmSource?.toLowerCase() || referrerSource,
+    sourceEvidence: utmSource ? "utm_claim" : referrerSource === "direct" ? "direct" : referrerSource === "internal" ? "internal" : "http_referrer",
+    serverReferred: isReferredSource(referrerSource),
+    utmSource,
     utmMedium: clampText(url.searchParams.get(ALLOWED_UTM[1]), 80),
     utmCampaign: clampText(url.searchParams.get(ALLOWED_UTM[2]), 120),
   };
@@ -207,14 +210,14 @@ async function logSecurityEvent(data, env) {
 }
 
 async function logVisit(data, identity, attribution, env) {
-  const referred = isReferredSource(attribution.source) ? 1 : 0;
+  const referred = attribution.serverReferred ? 1 : 0;
   await env.VISITOR_DB.batch([
     env.VISITOR_DB.prepare(
     `INSERT INTO visits
       (visited_at, ip_address, country, city, region, postal_code, path, referrer, user_agent, score, confidence, category, reasons, asn, as_organization, verified_bot,
-       visitor_id, session_id, source, utm_source, utm_medium, utm_campaign, classifier_version, bot_score, ja3_hash, ja4, js_detection_passed)
-     VALUES (strftime('%Y-%m-%dT%H:%M:%fZ','now'), ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)`
-    ).bind(data.ip, data.country, data.city, data.region, data.postalCode, data.path, data.referrer, data.userAgent, data.score, data.confidence, data.category, data.reasons.join("; "), data.asn, clampText(data.asOrganization, 250), data.verifiedBot ? 1 : 0, identity.visitorId, identity.sessionId, attribution.source, attribution.utmSource, attribution.utmMedium, attribution.utmCampaign, CLASSIFIER_VERSION, data.botScore, data.ja3Hash, data.ja4, data.jsDetectionPassed),
+       visitor_id, session_id, source, source_evidence, utm_source, utm_medium, utm_campaign, classifier_version, bot_score, ja3_hash, ja4, js_detection_passed)
+     VALUES (strftime('%Y-%m-%dT%H:%M:%fZ','now'), ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)`
+    ).bind(data.ip, data.country, data.city, data.region, data.postalCode, data.path, data.referrer, data.userAgent, data.score, data.confidence, data.category, data.reasons.join("; "), data.asn, clampText(data.asOrganization, 250), data.verifiedBot ? 1 : 0, identity.visitorId, identity.sessionId, attribution.source, attribution.sourceEvidence, attribution.utmSource, attribution.utmMedium, attribution.utmCampaign, CLASSIFIER_VERSION, data.botScore, data.ja3Hash, data.ja4, data.jsDetectionPassed),
     env.VISITOR_DB.prepare(
       `INSERT INTO visitor_profiles (visitor_id, first_seen_at, last_seen_at, first_source, last_source, first_referrer, last_referrer, last_referred_at, known_referred_visitor)
        VALUES (?1, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'), ?2, ?2, ?3, ?3, CASE WHEN ?4=1 THEN strftime('%Y-%m-%dT%H:%M:%fZ','now') END, ?4)
@@ -225,10 +228,10 @@ async function logVisit(data, identity, attribution, env) {
          known_referred_visitor=MAX(visitor_profiles.known_referred_visitor, excluded.known_referred_visitor)`
     ).bind(identity.visitorId, attribution.source, data.referrer, referred),
     env.VISITOR_DB.prepare(
-      `INSERT INTO sessions (session_id, visitor_id, started_at, last_event_at, entry_path, source, referrer, utm_source, utm_medium, utm_campaign, status, score, classifier_version)
-       VALUES (?1, ?2, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'), ?3, ?4, ?5, ?6, ?7, ?8, 'uncertain', ?9, ?10)
+      `INSERT INTO sessions (session_id, visitor_id, started_at, last_event_at, entry_path, source, source_evidence, referrer, utm_source, utm_medium, utm_campaign, status, score, classifier_version)
+       VALUES (?1, ?2, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'), ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'uncertain', ?10, ?11)
        ON CONFLICT(session_id) DO UPDATE SET last_event_at=excluded.last_event_at`
-    ).bind(identity.sessionId, identity.visitorId, data.path, attribution.source, data.referrer, attribution.utmSource, attribution.utmMedium, attribution.utmCampaign, data.score, CLASSIFIER_VERSION),
+    ).bind(identity.sessionId, identity.visitorId, data.path, attribution.source, attribution.sourceEvidence, data.referrer, attribution.utmSource, attribution.utmMedium, attribution.utmCampaign, data.score, CLASSIFIER_VERSION),
     env.VISITOR_DB.prepare(
       `INSERT INTO classification_events (occurred_at, visitor_id, session_id, event_type, classifier_version, score, confidence, reasons)
        VALUES (strftime('%Y-%m-%dT%H:%M:%fZ','now'), ?1, ?2, 'request_observed', ?3, ?4, ?5, ?6)`
@@ -242,12 +245,33 @@ async function readLogs(request, env, url) {
   const requested = Number.parseInt(url.searchParams.get("limit") || "100", 10);
   const limit = Number.isFinite(requested) ? Math.min(Math.max(requested, 1), MAX_RESULTS) : 100;
   const ip = url.searchParams.get("ip");
-  const columns = "id, visited_at, ip_address, country, city, region, postal_code, path, referrer, user_agent, score, confidence, category, reasons, asn, as_organization, verified_bot, visitor_id, session_id, source, utm_source, utm_medium, utm_campaign, classifier_version, bot_score, ja3_hash, ja4, js_detection_passed";
+  const columns = "id, visited_at, ip_address, country, city, region, postal_code, path, referrer, user_agent, score, confidence, category, reasons, asn, as_organization, verified_bot, visitor_id, session_id, source, source_evidence, utm_source, utm_medium, utm_campaign, classifier_version, bot_score, ja3_hash, ja4, js_detection_passed";
   const statement = ip
     ? env.VISITOR_DB.prepare(`SELECT ${columns} FROM visits WHERE ip_address = ?1 ORDER BY visited_at DESC LIMIT ?2`).bind(ip, limit)
     : env.VISITOR_DB.prepare(`SELECT ${columns} FROM visits ORDER BY visited_at DESC LIMIT ?1`).bind(limit);
   const { results } = await statement.all();
   return Response.json({ count: results.length, visits: results }, { headers: { "Cache-Control": "no-store" } });
+}
+
+async function readAudit(request, env, url) {
+  if (!isAuthorized(request, env)) return new Response("Unauthorized", { status: 401, headers: { "Cache-Control": "no-store" } });
+  if (request.method !== "GET") return new Response("Method Not Allowed", { status: 405, headers: { Allow: "GET" } });
+  const sessionId = url.searchParams.get("session_id") || "";
+  if (!/^[a-f0-9-]{36}$/i.test(sessionId)) return new Response("A valid session_id is required", { status: 400, headers: { "Cache-Control": "no-store" } });
+  const session = await env.VISITOR_DB.prepare(`SELECT * FROM sessions WHERE session_id=?1`).bind(sessionId).first();
+  if (!session) return new Response("Not Found", { status: 404, headers: { "Cache-Control": "no-store" } });
+  const [visits, analytics, classifications, profile, security] = await Promise.all([
+    env.VISITOR_DB.prepare(`SELECT * FROM visits WHERE session_id=?1 ORDER BY visited_at`).bind(sessionId).all(),
+    env.VISITOR_DB.prepare(`SELECT * FROM analytics_events WHERE session_id=?1 ORDER BY occurred_at`).bind(sessionId).all(),
+    env.VISITOR_DB.prepare(`SELECT * FROM classification_events WHERE session_id=?1 ORDER BY occurred_at`).bind(sessionId).all(),
+    env.VISITOR_DB.prepare(`SELECT * FROM visitor_profiles WHERE visitor_id=?1`).bind(session.visitor_id).first(),
+    env.VISITOR_DB.prepare(
+      `SELECT * FROM security_events WHERE ip_address IN (SELECT DISTINCT ip_address FROM visits WHERE session_id=?1)
+       AND occurred_at >= strftime('%Y-%m-%dT%H:%M:%fZ', datetime(?2, '-30 minutes'))
+       AND occurred_at <= strftime('%Y-%m-%dT%H:%M:%fZ', datetime(?3, '+30 minutes')) ORDER BY occurred_at`
+    ).bind(sessionId, session.started_at, session.last_event_at).all(),
+  ]);
+  return Response.json({ session, profile, visits: visits.results, analytics_events: analytics.results, classification_events: classifications.results, related_security_events: security.results }, { headers: { "Cache-Control": "no-store" } });
 }
 
 function scoreStoredVisit(visit) {
@@ -393,7 +417,7 @@ function validateEngagement(eventType, claimedSeconds, startedAt, now = Date.now
   const claimed = Math.min(Math.max(Number(claimedSeconds || 0), 0), 3600);
   if (eventType === "visible_10s" && elapsedSeconds < 9) return { eventType: "rejected_visible_10s", visibleSeconds: 0 };
   if (eventType === "visible_20s" && elapsedSeconds < 18) return { eventType: "rejected_visible_20s", visibleSeconds: 0 };
-  if (eventType === "page_hidden") return { eventType, visibleSeconds: Math.min(claimed, elapsedSeconds) };
+  if (eventType.startsWith("visible_") || eventType === "page_hidden") return { eventType, visibleSeconds: Math.min(claimed, elapsedSeconds) };
   return { eventType, visibleSeconds: claimed };
 }
 
@@ -416,8 +440,7 @@ async function handleAnalytics(request, env, siteName, identity) {
      VALUES (strftime('%Y-%m-%dT%H:%M:%fZ','now'), ?1, ?2, ?3, ?4, ?5, ?6, ?7)`
     ).bind(identity.visitorId, identity.sessionId, validated.eventType, path, validated.visibleSeconds, browserReferrer, CLASSIFIER_VERSION),
     ...(isReferredSource(browserSource) ? [
-      env.VISITOR_DB.prepare(`UPDATE sessions SET source=CASE WHEN source='direct' THEN ?1 ELSE source END, referrer=COALESCE(referrer, ?2) WHERE session_id=?3`).bind(browserSource, browserReferrer, identity.sessionId),
-      env.VISITOR_DB.prepare(`UPDATE visitor_profiles SET known_referred_visitor=1, last_source=?1, last_referrer=?2, last_referred_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE visitor_id=?3`).bind(browserSource, browserReferrer, identity.visitorId),
+      env.VISITOR_DB.prepare(`UPDATE sessions SET source=CASE WHEN source='direct' THEN ?1 ELSE source END, source_evidence=CASE WHEN source='direct' THEN 'browser_referrer_claim' ELSE source_evidence END, referrer=COALESCE(referrer, ?2) WHERE session_id=?3`).bind(browserSource, browserReferrer, identity.sessionId),
     ] : []),
   ]);
   await evaluateLiveSession(identity, env, siteName);
@@ -460,6 +483,39 @@ async function sendDailyDigest(env, siteName) {
   ].join("\n"));
 }
 
+async function retryPendingAlerts(env, siteName) {
+  const { results } = await env.VISITOR_DB.prepare(
+    `SELECT s.*, v.city, v.region, v.postal_code, v.user_agent
+     FROM sessions s LEFT JOIN visits v ON v.id=(SELECT MIN(v2.id) FROM visits v2 WHERE v2.session_id=s.session_id)
+     WHERE s.status='human' AND s.alerted_at IS NULL
+       AND s.started_at >= strftime('%Y-%m-%dT%H:%M:%fZ','now','-24 hours')
+     ORDER BY s.started_at LIMIT 50`
+  ).all();
+  for (const session of results) {
+    const claimed = await env.VISITOR_DB.prepare(`UPDATE sessions SET alerted_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE session_id=?1 AND alerted_at IS NULL`).bind(session.session_id).run();
+    if (Number(claimed.meta?.changes || 0) !== 1) continue;
+    let sent = false;
+    try {
+      sent = await sendEmail(env, siteName, `Probable human on ${siteName}`, [
+        `Probable human visitor on ${siteName}`, `Location: ${session.city || "Unknown"}, ${session.region || ""} ${session.postal_code || ""}`,
+        `Source: ${session.source || "direct"} (${session.source_evidence || "unknown evidence"})`, `Referrer: ${session.referrer || "none"}`,
+        `Campaign: ${session.utm_campaign || "none"}`, `Entry: ${session.entry_path}`,
+        `Device: ${parseDeviceBrowser(session.user_agent)}`, `Confidence: ${session.score}%`, `Why: ${session.reasons || "session evidence"}`,
+      ].join("\n"));
+    } catch (error) {
+      console.error("Scheduled alert retry failed", error);
+    }
+    if (!sent) {
+      await env.VISITOR_DB.prepare(`UPDATE sessions SET alerted_at=NULL WHERE session_id=?1`).bind(session.session_id).run();
+      continue;
+    }
+    await env.VISITOR_DB.prepare(
+      `INSERT INTO classification_events (occurred_at, visitor_id, session_id, event_type, classifier_version, score, confidence, reasons)
+       VALUES (strftime('%Y-%m-%dT%H:%M:%fZ','now'), ?1, ?2, 'alert_sent', ?3, ?4, 'human', ?5)`
+    ).bind(session.visitor_id, session.session_id, CLASSIFIER_VERSION, session.score, `${session.reasons || ""}; scheduled retry`).run();
+  }
+}
+
 function secureOriginResponse(response, identity, siteName) {
   const secured = new Response(response.body, response);
   secured.headers.set("X-Content-Type-Options", "nosniff");
@@ -467,19 +523,20 @@ function secureOriginResponse(response, identity, siteName) {
   secured.headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
   if (identity) {
     const domain = siteName ? `; Domain=${siteName}` : "";
-    secured.headers.append("Set-Cookie", `mf_vid=${identity.visitorId}; Max-Age=31536000; Path=/${domain}; Secure; HttpOnly; SameSite=Lax`);
+    secured.headers.append("Set-Cookie", `mf_vid=${identity.visitorId}; Max-Age=2592000; Path=/${domain}; Secure; HttpOnly; SameSite=Lax`);
     secured.headers.append("Set-Cookie", `mf_sid=${identity.sessionId}; Max-Age=1800; Path=/${domain}; Secure; HttpOnly; SameSite=Lax`);
   }
   return secured;
 }
 
-export { buildSessions, classifyRequest, classifySessionEvidence, isReferredSource, normalizeSource, parseDeviceBrowser, sanitizeReferrer, scoreStoredVisit, validateEngagement };
+export { attributionData, buildSessions, classifyRequest, classifySessionEvidence, isReferredSource, normalizeSource, parseDeviceBrowser, sanitizeReferrer, scoreStoredVisit, validateEngagement };
 
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const siteName = env.SITE_NAME || url.hostname.replace(/^www\./, "");
     if (url.pathname === LOG_PATH) return readLogs(request, env, url);
+    if (url.pathname === AUDIT_PATH) return readAudit(request, env, url);
     const identity = visitorIdentity(request);
     if (url.pathname === ANALYTICS_PATH) return handleAnalytics(request, env, siteName, identity);
 
@@ -511,6 +568,7 @@ export default {
   async scheduled(_controller, env, ctx) {
     ctx.waitUntil((async () => {
       const siteName = env.SITE_NAME || "matferg.com";
+      await retryPendingAlerts(env, siteName);
       await sendDailyDigest(env, siteName);
       const parsed = Number.parseInt(env.RETENTION_DAYS || "30", 10);
       const days = Number.isFinite(parsed) ? Math.min(Math.max(parsed, 1), 365) : 30;

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { buildSessions, classifyRequest, classifySessionEvidence, isReferredSource, normalizeSource, parseDeviceBrowser, sanitizeReferrer, validateEngagement } from "../src/index.js";
+import { attributionData, buildSessions, classifyRequest, classifySessionEvidence, isReferredSource, normalizeSource, parseDeviceBrowser, sanitizeReferrer, validateEngagement } from "../src/index.js";
 
 const base = {
   ip_address: "203.0.113.1", user_agent: "Mozilla/5.0", country: "US",
@@ -71,9 +71,23 @@ test("engagement and prior referral are explicit session evidence", () => {
   assert.equal(result.confidence, "human");
 });
 
-test("source normalization prefers allowlisted UTM and recognizes Facebook", () => {
-  assert.equal(normalizeSource(new URL("https://matspoems.com/?utm_source=Newsletter"), null), "newsletter");
+test("source normalization recognizes Facebook", () => {
   assert.equal(normalizeSource(new URL("https://matspoems.com/"), "https://l.facebook.com/path?q=x"), "facebook");
+});
+
+test("UTM is reporting attribution, not durable referral proof", () => {
+  const request = new Request("https://matspoems.com/?utm_source=facebook&utm_medium=social");
+  const attribution = attributionData(request, new URL(request.url));
+  assert.equal(attribution.source, "facebook");
+  assert.equal(attribution.sourceEvidence, "utm_claim");
+  assert.equal(attribution.serverReferred, false);
+});
+
+test("HTTP referrer is server-observed referral evidence", () => {
+  const request = new Request("https://matspoems.com/", { headers: { Referer: "https://www.facebook.com/profile?tracking=x" } });
+  const attribution = attributionData(request, new URL(request.url));
+  assert.equal(attribution.sourceEvidence, "http_referrer");
+  assert.equal(attribution.serverReferred, true);
 });
 
 test("same-site referrer is internal and never creates referral history", () => {
@@ -90,6 +104,7 @@ test("premature visibility claims are rejected and hidden time is capped", () =>
   const start = "2026-08-15T10:00:00.000Z";
   assert.equal(validateEngagement("visible_20s", 20, start, Date.parse(start) + 1000).eventType, "rejected_visible_20s");
   assert.equal(validateEngagement("visible_20s", 20, start, Date.parse(start) + 19000).eventType, "visible_20s");
+  assert.equal(validateEngagement("visible_20s", 3600, start, Date.parse(start) + 20000).visibleSeconds, 20);
   assert.equal(validateEngagement("page_hidden", 999, start, Date.parse(start) + 5000).visibleSeconds, 5);
 });
 
@@ -98,3 +113,9 @@ test("visitor profiles are included in retention cleanup", async () => {
   assert.match(source, /DELETE FROM visitor_profiles WHERE last_seen_at/);
 });
 
+test("complete audit endpoint and scheduled alert retry remain wired", async () => {
+  const source = await readFile(new URL("../src/index.js", import.meta.url), "utf8");
+  assert.match(source, /const AUDIT_PATH = "\/_visitor-audit"/);
+  assert.match(source, /async function retryPendingAlerts/);
+  assert.match(source, /alerted_at IS NULL/);
+});

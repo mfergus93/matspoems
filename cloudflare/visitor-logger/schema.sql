@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS visits (
   ,visitor_id TEXT
   ,session_id TEXT
   ,source TEXT
+  ,source_evidence TEXT
   ,utm_source TEXT
   ,utm_medium TEXT
   ,utm_campaign TEXT
@@ -37,7 +38,7 @@ CREATE TABLE IF NOT EXISTS visitor_profiles (
 
 CREATE TABLE IF NOT EXISTS sessions (
   session_id TEXT PRIMARY KEY, visitor_id TEXT NOT NULL, started_at TEXT NOT NULL,
-  last_event_at TEXT NOT NULL, entry_path TEXT, source TEXT, referrer TEXT,
+  last_event_at TEXT NOT NULL, entry_path TEXT, source TEXT, source_evidence TEXT, referrer TEXT,
   utm_source TEXT, utm_medium TEXT, utm_campaign TEXT, status TEXT NOT NULL,
   score INTEGER NOT NULL, reasons TEXT, classifier_version TEXT NOT NULL, alerted_at TEXT
 );

@@ -14,13 +14,20 @@ Daily reporting uses a conservative session classifier. Visits are split after
 and impossible page velocity or rapid route sweeps are classified as automated.
 Target-area visits are highlighted only after session-level evaluation.
 
-The site assigns random first-party visitor and 30-minute session identifiers.
+The site assigns a random 30-day first-party visitor identifier and a 30-minute session identifier.
 An allowlisted beacon records page visibility milestones and internal link
 clicks. Referral attribution combines the HTTP referrer, browser referrer, and
 `utm_source`, `utm_medium`, and `utm_campaign`; other query parameters are not
 stored. Each request observation, browser event, classification transition, and
 alert is retained as versioned evidence for later re-evaluation. A session sends
 one real-time email when it first crosses the probable-human threshold.
+UTM and browser-referrer values remain attribution claims; only a server-observed
+external HTTP referrer establishes durable referral history. Scheduled runs
+retry recent human sessions whose real-time email was not delivered.
+
+Authenticated audit access is available at
+`/_visitor-audit?session_id=<uuid>`. It returns the session, visits, engagement
+events, classification history, visitor profile, and related security events.
 
 Run `npm test` for the observed-traffic classifier fixtures.
 
