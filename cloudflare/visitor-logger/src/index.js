@@ -64,14 +64,18 @@ function normalizeSource(url, referrer) {
     const host = new URL(referrer).hostname.replace(/^www\./, "").toLowerCase();
     const siteHost = url.hostname.replace(/^www\./, "").toLowerCase();
     if (host === siteHost) return "internal";
-    if (/facebook\.com|fb\.com|l\.facebook\.com/.test(host)) return "facebook";
-    if (/linkedin\.com|lnkd\.in/.test(host)) return "linkedin";
-    if (/google\./.test(host)) return "google";
-    if (/bing\.com/.test(host)) return "bing";
+    if (hostMatches(host, ["facebook.com", "fb.com"])) return "facebook";
+    if (hostMatches(host, ["linkedin.com", "lnkd.in"])) return "linkedin";
+    if (hostMatches(host, ["google.com", "google.co.uk", "google.ca", "google.de", "google.fr", "google.co.in", "google.com.au", "google.co.jp"])) return "google";
+    if (hostMatches(host, ["bing.com"])) return "bing";
     return host;
   } catch {
     return "direct";
   }
+}
+
+function hostMatches(host, trustedRoots) {
+  return trustedRoots.some((root) => host === root || host.endsWith(`.${root}`));
 }
 
 function isReferredSource(source) {
@@ -271,7 +275,8 @@ async function readAudit(request, env, url) {
        AND occurred_at <= strftime('%Y-%m-%dT%H:%M:%fZ', datetime(?3, '+30 minutes')) ORDER BY occurred_at`
     ).bind(sessionId, session.started_at, session.last_event_at).all(),
   ]);
-  return Response.json({ session, profile, visits: visits.results, analytics_events: analytics.results, classification_events: classifications.results, related_security_events: security.results }, { headers: { "Cache-Control": "no-store" } });
+  const relatedSecurityEvents = security.results.map((event) => ({ ...event, association: "same_ip_time_window" }));
+  return Response.json({ session, profile, visits: visits.results, analytics_events: analytics.results, classification_events: classifications.results, related_security_events: relatedSecurityEvents }, { headers: { "Cache-Control": "no-store" } });
 }
 
 function scoreStoredVisit(visit) {
@@ -356,8 +361,9 @@ function classifySessionEvidence(session, events, knownReferredVisitor = false) 
   if (eventTypes.has("visible_20s") || hiddenSeconds >= 20) { score += 35; reasons.push("20 seconds visible engagement"); }
   else if (eventTypes.has("visible_10s") || hiddenSeconds >= 10) { score += 20; reasons.push("10 seconds visible engagement"); }
   if (eventTypes.has("internal_click")) { score += 10; reasons.push("internal click"); }
-  if (knownReferredVisitor && session.source === "direct") { score += 10; reasons.push("previously referred visitor"); }
-  if (!knownReferredVisitor && session.source === "direct") { score -= 5; reasons.push("first-seen direct visit"); }
+  const serverObservedReferral = session.source_evidence === "http_referrer";
+  if (knownReferredVisitor && !serverObservedReferral) { score += 10; reasons.push("previously server-referred visitor"); }
+  if (!knownReferredVisitor && !serverObservedReferral) { score -= 5; reasons.push("no server-observed referral"); }
   score = Math.max(0, Math.min(100, score));
   return { score, confidence: score >= 65 ? "human" : score < 20 ? "bot" : "uncertain", reasons: [...new Set(reasons)] };
 }
@@ -367,11 +373,12 @@ async function evaluateLiveSession(identity, env, siteName) {
     env.VISITOR_DB.prepare(`SELECT visited_at, ip_address, country, city, region, postal_code, path, referrer, user_agent, score, reasons, source, asn, as_organization FROM visits WHERE session_id=?1 ORDER BY visited_at`).bind(identity.sessionId).all(),
     env.VISITOR_DB.prepare(`SELECT event_type, visible_seconds, path, occurred_at FROM analytics_events WHERE session_id=?1 ORDER BY occurred_at`).bind(identity.sessionId).all(),
     env.VISITOR_DB.prepare(`SELECT known_referred_visitor FROM visitor_profiles WHERE visitor_id=?1`).bind(identity.visitorId).first(),
-    env.VISITOR_DB.prepare(`SELECT status, alerted_at, source, entry_path, referrer, utm_source, utm_medium, utm_campaign FROM sessions WHERE session_id=?1`).bind(identity.sessionId).first(),
+    env.VISITOR_DB.prepare(`SELECT status, alerted_at, source, source_evidence, entry_path, referrer, utm_source, utm_medium, utm_campaign FROM sessions WHERE session_id=?1`).bind(identity.sessionId).first(),
   ]);
   if (!visitRows.results.length || !storedSession) return null;
   const session = buildSessions(visitRows.results)[0];
   session.source = storedSession.source || session.source || "direct";
+  session.source_evidence = storedSession.source_evidence || session.source_evidence || "direct";
   const result = classifySessionEvidence(session, eventRows.results, Boolean(profile?.known_referred_visitor));
   const changed = storedSession.status !== result.confidence;
   await env.VISITOR_DB.batch([
@@ -390,7 +397,7 @@ async function evaluateLiveSession(identity, env, siteName) {
       try {
         sent = await sendEmail(env, siteName, `${target ? "Target-area " : ""}probable human on ${siteName}`, [
           `Probable human visitor on ${siteName}`, `Location: ${session.city || "Unknown"}, ${session.region || ""} ${session.postal_code || ""}`,
-          `Source: ${storedSession.source || "direct"}`, `Referrer: ${storedSession.referrer || "none"}`,
+          `Source: ${storedSession.source || "direct"} (${storedSession.source_evidence || "unknown evidence"})`, `Referrer: ${storedSession.referrer || "none"}`,
           `Campaign: ${storedSession.utm_campaign || "none"}`, `Entry: ${storedSession.entry_path}`,
           `Device: ${parseDeviceBrowser(session.user_agent)}`, `Pages: ${session.pages}; routes: ${session.distinctRoutes}; observed span: ${session.durationSeconds}s`,
           `Confidence: ${result.score}%`, `Why: ${result.reasons.join("; ")}`,
@@ -451,7 +458,7 @@ async function sendDailyDigest(env, siteName) {
   const [{ results: visits }, security, { results: storedSessions }] = await Promise.all([
     env.VISITOR_DB.prepare(`SELECT visited_at, ip_address, country, city, region, postal_code, path, referrer, user_agent, score, confidence, category, reasons, asn, as_organization, visitor_id, session_id, source, utm_source, utm_medium, utm_campaign FROM visits WHERE visited_at >= strftime('%Y-%m-%dT%H:%M:%fZ','now','-24 hours') ORDER BY visited_at ASC`).all(),
     env.VISITOR_DB.prepare(`SELECT COUNT(*) AS count FROM security_events WHERE occurred_at >= strftime('%Y-%m-%dT%H:%M:%fZ','now','-24 hours')`).first(),
-    env.VISITOR_DB.prepare(`SELECT session_id, status, score, reasons, source, referrer, utm_source, utm_medium, utm_campaign FROM sessions WHERE started_at >= strftime('%Y-%m-%dT%H:%M:%fZ','now','-24 hours')`).all(),
+    env.VISITOR_DB.prepare(`SELECT session_id, status, score, reasons, source, source_evidence, referrer, utm_source, utm_medium, utm_campaign FROM sessions WHERE started_at >= strftime('%Y-%m-%dT%H:%M:%fZ','now','-24 hours')`).all(),
   ]);
   const sessions = buildSessions(visits);
   const evaluated = new Map(storedSessions.map((session) => [session.session_id, session]));
@@ -462,6 +469,7 @@ async function sendDailyDigest(env, siteName) {
     session.score = stored.score;
     session.reasons = String(stored.reasons || "").split("; ").filter(Boolean);
     session.source = stored.source;
+    session.source_evidence = stored.source_evidence;
     session.referrer = stored.referrer || session.referrer;
     session.utm_source = stored.utm_source;
     session.utm_medium = stored.utm_medium;
@@ -471,7 +479,7 @@ async function sendDailyDigest(env, siteName) {
   const uncertain = sessions.filter((s) => s.confidence === "uncertain");
   const bots = sessions.filter((s) => s.confidence === "bot");
   const targetHumans = humans.filter((s) => TARGET_CITIES.has((s.city || "").toLowerCase().trim()) || TARGET_ZIPS.has((s.postal_code || "").trim()));
-  const formatSession = (s) => `${s.visited_at} | ${s.city || "Unknown"}, ${s.region || ""} | ${s.pages} page(s), ${s.distinctRoutes} route(s), ${s.durationSeconds}s | Entry: ${s.paths[0]} | Source: ${s.source || "direct"} | Referrer: ${s.referrer || "none"} | UTM: ${[s.utm_source, s.utm_medium, s.utm_campaign].filter(Boolean).join("/") || "none"} | ${parseDeviceBrowser(s.user_agent)} | ${s.score}% | ${s.reasons.join("; ")}`;
+  const formatSession = (s) => `${s.visited_at} | ${s.city || "Unknown"}, ${s.region || ""} | ${s.pages} page(s), ${s.distinctRoutes} route(s), ${s.durationSeconds}s | Entry: ${s.paths[0]} | Source: ${s.source || "direct"} (${s.source_evidence || "unknown evidence"}) | Referrer: ${s.referrer || "none"} | UTM: ${[s.utm_source, s.utm_medium, s.utm_campaign].filter(Boolean).join("/") || "none"} | ${parseDeviceBrowser(s.user_agent)} | ${s.score}% | ${s.reasons.join("; ")}`;
   const lines = humans.length ? humans.map(formatSession).join("\n") : "No probable human sessions recorded.";
   const targetLines = targetHumans.length ? targetHumans.map(formatSession).join("\n") : "No probable target-area human sessions recorded.";
   await sendEmail(env, siteName, `Visitor digest: ${humans.length} human, ${uncertain.length} uncertain`, [
@@ -529,7 +537,7 @@ function secureOriginResponse(response, identity, siteName) {
   return secured;
 }
 
-export { attributionData, buildSessions, classifyRequest, classifySessionEvidence, isReferredSource, normalizeSource, parseDeviceBrowser, sanitizeReferrer, scoreStoredVisit, validateEngagement };
+export { attributionData, buildSessions, classifyRequest, classifySessionEvidence, hostMatches, isReferredSource, normalizeSource, parseDeviceBrowser, sanitizeReferrer, scoreStoredVisit, validateEngagement };
 
 export default {
   async fetch(request, env, ctx) {

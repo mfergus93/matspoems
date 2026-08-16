@@ -13,7 +13,6 @@ const visit = (time, path = "/", extra = {}) => ({ ...base, visited_at: time, pa
 test("single page stays uncertain", () => {
   assert.equal(buildSessions([visit("2026-08-15T10:00:00.000Z")])[0].confidence, "uncertain");
 });
-
 test("two pages in one second stay uncertain", () => {
   const session = buildSessions([visit("2026-08-15T10:00:00.000Z"), visit("2026-08-15T10:00:01.000Z", "/two")])[0];
   assert.equal(session.confidence, "uncertain");
@@ -75,12 +74,26 @@ test("source normalization recognizes Facebook", () => {
   assert.equal(normalizeSource(new URL("https://matspoems.com/"), "https://l.facebook.com/path?q=x"), "facebook");
 });
 
+test("lookalike referrer domains are never trusted brands", () => {
+  assert.equal(normalizeSource(new URL("https://matspoems.com/"), "https://notfacebook.com/path"), "notfacebook.com");
+  assert.equal(normalizeSource(new URL("https://matspoems.com/"), "https://linkedin.com.attacker.example/path"), "linkedin.com.attacker.example");
+  assert.equal(normalizeSource(new URL("https://matspoems.com/"), "https://google.com.evil/path"), "google.com.evil");
+});
+
 test("UTM is reporting attribution, not durable referral proof", () => {
   const request = new Request("https://matspoems.com/?utm_source=facebook&utm_medium=social");
   const attribution = attributionData(request, new URL(request.url));
   assert.equal(attribution.source, "facebook");
   assert.equal(attribution.sourceEvidence, "utm_claim");
   assert.equal(attribution.serverReferred, false);
+});
+
+test("UTM and browser claims do not avoid the unknown-referral penalty", () => {
+  const direct = classifySessionEvidence({ score: 40, reasons: [], source: "direct", source_evidence: "direct", confidence: "uncertain" }, [], false);
+  const utm = classifySessionEvidence({ score: 40, reasons: [], source: "facebook", source_evidence: "utm_claim", confidence: "uncertain" }, [], false);
+  const browser = classifySessionEvidence({ score: 40, reasons: [], source: "facebook", source_evidence: "browser_referrer_claim", confidence: "uncertain" }, [], false);
+  assert.equal(utm.score, direct.score);
+  assert.equal(browser.score, direct.score);
 });
 
 test("HTTP referrer is server-observed referral evidence", () => {
@@ -91,7 +104,7 @@ test("HTTP referrer is server-observed referral evidence", () => {
 });
 
 test("same-site referrer is internal and never creates referral history", () => {
-  const source = normalizeSource(new URL("https://matspoems.com/"), "https://www.matspoems.com/");
+  const source = normalizeSource(new URL("https://matspoems.com/photography.html"), "https://www.matspoems.com/");
   assert.equal(source, "internal");
   assert.equal(isReferredSource(source), false);
 });
@@ -118,4 +131,6 @@ test("complete audit endpoint and scheduled alert retry remain wired", async () 
   assert.match(source, /const AUDIT_PATH = "\/_visitor-audit"/);
   assert.match(source, /async function retryPendingAlerts/);
   assert.match(source, /alerted_at IS NULL/);
+  assert.match(source, /association: "same_ip_time_window"/);
 });
+
