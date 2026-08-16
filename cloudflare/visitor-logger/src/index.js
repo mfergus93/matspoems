@@ -30,6 +30,8 @@ const SCANNER_PATTERNS = [
 ];
 const TOOL_UA_RE = /curl|python-requests|go-http-client|wget|zgrab|nmap|netsparker|nikto|sqlmap|headlesschrome|phantomjs|puppeteer|selenium|httpx|masscan|censys/i;
 const CLAIMED_BOT_UA_RE = /googlebot|bingbot|duckduckbot|yandexbot|slurp|baidu|facebookexternalhit|twitterbot|linkedinbot|pinterest|applebot|gptbot|claudebot|bytespider/i;
+const HISTORICAL_DISCOVERY_RE = /^(?:\/robots\.txt|\/sitemap(?:[-_][^/]*)?\.xml|\/(?:admin|administrator|login)(?:\/|$))/i;
+const OWNED_REFERRER_HOSTS = new Set(["matferg.com", "matspoems.com", "mfergus93.github.io"]);
 
 function clampText(value, length) {
   return value ? String(value).slice(0, length) : null;
@@ -312,12 +314,13 @@ function buildSessions(visits) {
     const time = Date.parse(visit.visited_at);
     let session = active.get(key);
     if (!session || !Number.isFinite(time) || time - session.lastTime > SESSION_GAP_MS) {
-      session = { ...visit, firstTime: time, lastTime: time, pages: 0, paths: [], referrers: [], requestScores: [], requestReasons: [] };
+      session = { ...visit, firstTime: time, lastTime: time, pages: 0, paths: [], referrers: [], visits: [], requestScores: [], requestReasons: [] };
       sessions.push(session);
       active.set(key, session);
     }
     session.pages += 1;
     session.lastTime = time;
+    session.visits.push(visit);
     if (!session.paths.includes(visit.path)) session.paths.push(visit.path);
     if (visit.referrer && !session.referrers.includes(visit.referrer)) session.referrers.push(visit.referrer);
     // Recompute from stored evidence so records created by older scoring
@@ -369,6 +372,21 @@ function externalReferrerForSite(referrers, siteName) {
   }) || null;
 }
 
+function historicalPathKind(pathname) {
+  const path = String(pathname || "/").split(/[?#]/, 1)[0] || "/";
+  if (isScannerPath(path) || HISTORICAL_DISCOVERY_RE.test(path)) return "probe";
+  if (ASSET_RE.test(path) || /\.(?:md|txt|webmanifest|zip)$/i.test(path) || /^\/(?:assets|images)(?:\/|$)/i.test(path) || /^\/favicon(?:\.[a-z0-9]+)?$/i.test(path)) return "asset";
+  return "page";
+}
+
+function isOwnedReferrer(referrer) {
+  try {
+    return OWNED_REFERRER_HOSTS.has(new URL(referrer).hostname.replace(/^www\./, "").toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
 function classifyRetroSession(session, siteName) {
   const externalReferrer = externalReferrerForSite(session.referrers, siteName);
   if (!externalReferrer) return null;
@@ -411,44 +429,184 @@ function classifyRetroSession(session, siteName) {
   }
   score = Math.max(0, Math.min(100, score));
   const classification = score >= 60 ? "likely_human" : score < 20 ? "likely_automated" : "uncertain";
-  return { ...session, externalReferrer, source: normalizeSource(new URL(`https://${siteName}/`), externalReferrer), score, classification, reasons, classifierVersion: "retro-v1" };
+  return { ...session, externalReferrer, source: normalizeSource(new URL(`https://${siteName}/`), externalReferrer), score, classification, reasons, classifierVersion: "retro-v2" };
 }
 
-async function sendHistoricReferralReport(request, env, siteName) {
+function buildHistoricReferralIpGroups(visits, siteName) {
+  const siteUrl = new URL(`https://${siteName}/`);
+  const normalized = visits.map((visit) => ({ ...visit, historicalKind: historicalPathKind(visit.path) }));
+  const externalRows = normalized
+    .filter((visit) => Boolean(externalReferrerForSite([visit.referrer], siteName)))
+    .sort((a, b) => Date.parse(a.visited_at) - Date.parse(b.visited_at));
+  const referredIps = new Set(externalRows.map((visit) => visit.ip_address || "unknown"));
+  const rowsByIp = new Map();
+
+  for (const visit of normalized) {
+    const ip = visit.ip_address || "unknown";
+    if (!referredIps.has(ip)) continue;
+    if (!rowsByIp.has(ip)) rowsByIp.set(ip, []);
+    rowsByIp.get(ip).push(visit);
+  }
+
+  const referredPageSessions = buildSessions(normalized.filter((visit) => visit.historicalKind === "page"))
+    .map((session) => classifyRetroSession(session, siteName))
+    .filter(Boolean);
+  const pageSessionsByIp = new Map();
+  for (const session of referredPageSessions) {
+    const ip = session.ip_address || "unknown";
+    if (!pageSessionsByIp.has(ip)) pageSessionsByIp.set(ip, []);
+    pageSessionsByIp.get(ip).push(session);
+  }
+
+  const groups = [...referredIps].map((ip) => {
+    const allRows = (rowsByIp.get(ip) || []).sort((a, b) => Date.parse(a.visited_at) - Date.parse(b.visited_at));
+    const referrals = allRows.filter((visit) => Boolean(externalReferrerForSite([visit.referrer], siteName)));
+    const rows = allRows.filter((visit) => referrals.some((referral) => {
+      const elapsed = Date.parse(visit.visited_at) - Date.parse(referral.visited_at);
+      return Number.isFinite(elapsed) && elapsed >= 0 && elapsed <= 30 * 60 * 1000;
+    }));
+    const pageSessions = pageSessionsByIp.get(ip) || [];
+    const pages = pageSessions.flatMap((session) => session.visits || []);
+    const assets = rows.filter((visit) => visit.historicalKind === "asset");
+    const probes = rows.filter((visit) => visit.historicalKind === "probe");
+    const routes = [...new Set(pageSessions.flatMap((session) => session.paths || []))];
+    const referrers = [...new Set(referrals.map((visit) => externalReferrerForSite([visit.referrer], siteName)).filter(Boolean))];
+    const sources = [...new Set(referrers.map((referrer) => normalizeSource(siteUrl, referrer)))];
+    const devices = [...new Set(rows.map((visit) => parseDeviceBrowser(visit.user_agent)).filter(Boolean))];
+    const locations = [...new Set(rows.map((visit) => [visit.city, visit.region, visit.country].filter(Boolean).join(", ") || "Unknown"))];
+    const networks = [...new Set(rows.map((visit) => [visit.asn ? `AS${visit.asn}` : null, visit.as_organization].filter(Boolean).join(" ")).filter(Boolean))];
+    const firstTime = rows.length ? Date.parse(rows[0].visited_at) : NaN;
+    const lastTime = rows.length ? Date.parse(rows.at(-1).visited_at) : NaN;
+    const pageFirstTime = pages.length ? Date.parse(pages[0].visited_at) : NaN;
+    const delayedAssetBurst = pages.length === 1 && assets.some((asset) => {
+      const delay = Date.parse(asset.visited_at) - pageFirstTime;
+      return delay >= 5 * 60 * 1000 && delay <= 30 * 60 * 1000;
+    });
+    const flags = new Set();
+    const strongAutomationReasons = new Set();
+    if (probes.length) {
+      flags.add("scanner or discovery path");
+      strongAutomationReasons.add("scanner or discovery path");
+    }
+    if (delayedAssetBurst) {
+      flags.add("delayed asset-only retrieval after one HTML page");
+      strongAutomationReasons.add("delayed asset-only retrieval after one HTML page");
+    }
+    if (rows.some((visit) => isHostingNetwork(visit.asn, visit.as_organization || ""))) flags.add("hosting network");
+    if (rows.some((visit) => TOOL_UA_RE.test(visit.user_agent || "") || CLAIMED_BOT_UA_RE.test(visit.user_agent || "") || Boolean(visit.verified_bot))) {
+      flags.add("bot/tool user-agent or verified bot");
+      strongAutomationReasons.add("bot/tool user-agent or verified bot");
+    }
+    if (rows.some((visit) => Number.isFinite(visit.bot_score) && visit.bot_score <= 29)) {
+      flags.add("low Cloudflare bot score");
+      strongAutomationReasons.add("low Cloudflare bot score");
+    }
+
+    return {
+      siteName, ip, rows, referrals, pages, assets, probes, pageSessions, routes, referrers, sources, devices, locations, networks,
+      firstSeen: Number.isFinite(firstTime) ? rows[0].visited_at : null,
+      lastSeen: Number.isFinite(lastTime) ? rows.at(-1).visited_at : null,
+      pageSpanSeconds: pageSessions.reduce((total, session) => total + Math.max(0, session.durationSeconds || 0), 0),
+      sourceCategory: referrers.length && referrers.every(isOwnedReferrer) ? "owned_referral" : "external_referral",
+      flags, strongAutomationReasons,
+    };
+  });
+
+  const groupByIp = new Map(groups.map((group) => [group.ip, group]));
+  for (let left = 0; left < externalRows.length; left += 1) {
+    const a = externalRows[left];
+    const aTime = Date.parse(a.visited_at);
+    const aSource = normalizeSource(siteUrl, a.referrer);
+    for (let right = left + 1; right < externalRows.length; right += 1) {
+      const b = externalRows[right];
+      if (a.ip_address === b.ip_address) continue;
+      const seconds = (Date.parse(b.visited_at) - aTime) / 1000;
+      if (!Number.isFinite(seconds)) continue;
+      if (seconds > 90) break;
+      if (aSource !== normalizeSource(siteUrl, b.referrer)) continue;
+      const aGroup = groupByIp.get(a.ip_address || "unknown");
+      const bGroup = groupByIp.get(b.ip_address || "unknown");
+      if (!aGroup || !bGroup) continue;
+      const technicalCluster = a.historicalKind === "probe" && b.historicalKind === "probe";
+      const duplicateSinglePage = seconds <= 2 && a.path === b.path && a.referrer === b.referrer && a.user_agent === b.user_agent && aGroup.pages.length <= 1 && bGroup.pages.length <= 1;
+      if (technicalCluster) {
+        aGroup.flags.add("cross-IP technical reconnaissance cluster");
+        bGroup.flags.add("cross-IP technical reconnaissance cluster");
+        aGroup.strongAutomationReasons.add("cross-IP technical reconnaissance cluster");
+        bGroup.strongAutomationReasons.add("cross-IP technical reconnaissance cluster");
+      } else if (duplicateSinglePage) {
+        aGroup.flags.add("near-simultaneous duplicate referral across IPs");
+        bGroup.flags.add("near-simultaneous duplicate referral across IPs");
+        aGroup.strongAutomationReasons.add("near-simultaneous duplicate referral across IPs");
+        bGroup.strongAutomationReasons.add("near-simultaneous duplicate referral across IPs");
+      }
+    }
+  }
+
+  for (const group of groups) {
+    const automatedSession = group.pageSessions.some((session) => session.classification === "likely_automated");
+    const humanSession = group.pageSessions.some((session) => session.classification === "likely_human");
+    const strongAutomation = group.strongAutomationReasons.size > 0 || automatedSession;
+    if (strongAutomation && humanSession) group.classification = "mixed";
+    else if (strongAutomation) group.classification = "likely_automated";
+    else if (humanSession) group.classification = "likely_human";
+    else group.classification = "uncertain";
+
+    const strongHuman = group.pageSessions.some((session) => session.pages >= 2 && session.distinctRoutes >= 2 && session.durationSeconds >= 15);
+    group.evidenceQuality = strongAutomation || strongHuman ? "strong" : group.pages.length >= 2 || group.pageSessions.length >= 2 ? "moderate" : "weak";
+    group.identityQuality = "low";
+    const sessionReasons = group.pageSessions.flatMap((session) => session.reasons || []);
+    group.reasons = [...new Set([...group.flags, ...sessionReasons])];
+  }
+
+  const order = { likely_human: 0, uncertain: 1, mixed: 2, likely_automated: 3 };
+  return groups.sort((a, b) => order[a.classification] - order[b.classification] || Date.parse(a.firstSeen) - Date.parse(b.firstSeen));
+}
+
+function formatHistoricReferralIpReport(siteName, visits, groups) {
+  const counts = {
+    likely_human: groups.filter((group) => group.classification === "likely_human").length,
+    uncertain: groups.filter((group) => group.classification === "uncertain").length,
+    mixed: groups.filter((group) => group.classification === "mixed").length,
+    likely_automated: groups.filter((group) => group.classification === "likely_automated").length,
+  };
+  const lines = groups.map((group, index) => {
+    const network = group.networks.join("; ") || "Unknown network";
+    const pageEvidence = `${group.pages.length} HTML page request(s), ${group.routes.length} HTML route(s), ${group.pageSessions.length} reconstructed page session(s), ${group.pageSpanSeconds}s page span`;
+    return `${index + 1}. ${group.classification.toUpperCase()} | IP ${group.ip}\n   Source: ${group.sources.join(", ") || "Unknown"} | ${group.sourceCategory.replace("_", " ")}\n   Seen: ${group.firstSeen} to ${group.lastSeen}\n   Page evidence: ${pageEvidence}\n   Excluded from page metrics: ${group.assets.length} asset request(s), ${group.probes.length} probe/discovery request(s)\n   Location/device: ${group.locations.join("; ")} | ${group.devices.join("; ")}\n   Network: ${network}\n   Evidence quality: ${group.evidenceQuality.toUpperCase()} | Identity quality: LOW (IP is not a person)\n   Why: ${group.reasons.join("; ") || "server-recorded external referral without enough historical behavior"}`;
+  });
+  return {
+    counts,
+    body: [
+      `CORRECTED historical referred visitors by unique IP for ${siteName}`,
+      "Classifier: retro-v2 (HTML-page-only behavioral metrics)",
+      `Generated: ${new Date().toISOString()}`,
+      `Visits examined: ${visits.length}`,
+      `Unique referred IP groups: ${groups.length}`,
+      `Likely human: ${counts.likely_human} | Uncertain: ${counts.uncertain} | Mixed: ${counts.mixed} | Likely automated: ${counts.likely_automated}`,
+      "",
+      "This report supersedes the earlier retro-v1 referral report. HTML pages, assets, and technical probes are classified before session reconstruction. Assets never increase page count, route count, or page span. Scanner/discovery paths remain automation evidence but are not counted as pages.",
+      "",
+      "Limitations: pre-instrumentation traffic lacks reliable visitor/session IDs and visible engagement. Sessions use historically available server evidence and a 30-minute inactivity boundary. Exact IP is only a grouping key; shared, mobile, proxy, and changing addresses prevent person-level identification. Current network enrichment may not describe historical ownership.",
+      "",
+      ...lines,
+    ].join("\n"),
+  };
+}
+
+async function sendHistoricReferralReport(request, env, siteName, url) {
   if (!isAuthorized(request, env)) return new Response("Unauthorized", { status: 401, headers: { "Cache-Control": "no-store" } });
   if (request.method !== "POST") return new Response("Method Not Allowed", { status: 405, headers: { Allow: "POST" } });
   const { results: visits } = await env.VISITOR_DB.prepare(
     `SELECT visited_at, ip_address, country, city, region, postal_code, path, referrer, user_agent, asn, as_organization, verified_bot, bot_score, session_id
      FROM visits ORDER BY visited_at ASC LIMIT 20000`
   ).all();
-  const referred = buildSessions(visits).map((session) => classifyRetroSession(session, siteName)).filter(Boolean);
-  const counts = {
-    likely_human: referred.filter((session) => session.classification === "likely_human").length,
-    uncertain: referred.filter((session) => session.classification === "uncertain").length,
-    likely_automated: referred.filter((session) => session.classification === "likely_automated").length,
-  };
-  const order = { likely_human: 0, uncertain: 1, likely_automated: 2 };
-  referred.sort((a, b) => order[a.classification] - order[b.classification] || Date.parse(a.visited_at) - Date.parse(b.visited_at));
-  const lines = referred.map((session, index) => {
-    const location = [session.city, session.region, session.country].filter(Boolean).join(", ") || "Unknown";
-    const network = [session.asn ? `AS${session.asn}` : null, session.as_organization].filter(Boolean).join(" ") || "Unknown network";
-    return `${index + 1}. ${session.classification.toUpperCase()} | ${session.score}% | ${session.visited_at}\n   IP: ${session.ip_address} | ${location} | ${parseDeviceBrowser(session.user_agent)}\n   Source: ${session.source} | Referrer: ${session.externalReferrer}\n   Entry: ${session.paths[0]} | ${session.pages} page(s), ${session.distinctRoutes} route(s), ${session.durationSeconds}s span | ${network}\n   Why: ${session.reasons.join("; ")}`;
-  });
-  const body = [
-    `Historical external-referral lookback for ${siteName}`,
-    `Classifier: retro-v1 (historically available server evidence only)`,
-    `Generated: ${new Date().toISOString()}`,
-    `Visits examined: ${visits.length}`,
-    `Externally referred sessions: ${referred.length}`,
-    `Likely human: ${counts.likely_human} | Uncertain: ${counts.uncertain} | Likely automated: ${counts.likely_automated}`,
-    "",
-    "Limitations: pre-instrumentation traffic lacks reliable visitor/session IDs, visible engagement, internal clicks, browser corroboration, discarded UTMs, and any bot/fingerprint fields not captured at the time. Same IP/User-Agent sessions are reconstructed with a 30-minute inactivity boundary.",
-    "",
-    ...lines,
-  ].join("\n");
-  const sent = await sendEmail(env, siteName, `Historical external referrals â€” ${siteName} (${referred.length} sessions)`, body);
+  const groups = buildHistoricReferralIpGroups(visits, siteName);
+  const { counts, body } = formatHistoricReferralIpReport(siteName, visits, groups);
+  const shouldEmail = url.searchParams.get("email") !== "0";
+  const sent = shouldEmail ? await sendEmail(env, siteName, `CORRECTED historical referred IPs - ${siteName} (${groups.length} IPs)`, body) : true;
   if (!sent) return new Response("Email service unavailable", { status: 503, headers: { "Cache-Control": "no-store" } });
-  return Response.json({ site: siteName, classifier_version: "retro-v1", visits_examined: visits.length, referred_sessions: referred.length, counts, emailed: true }, { headers: { "Cache-Control": "no-store" } });
+  return Response.json({ site: siteName, classifier_version: "retro-v2", visits_examined: visits.length, referred_ip_groups: groups.length, counts, emailed: shouldEmail, report: shouldEmail ? undefined : body }, { headers: { "Cache-Control": "no-store" } });
 }
 
 function classifySessionEvidence(session, events, knownReferredVisitor = false) {
@@ -636,7 +794,7 @@ function secureOriginResponse(response, identity, siteName) {
   return secured;
 }
 
-export { attributionData, buildSessions, classifyRequest, classifyRetroSession, classifySessionEvidence, externalReferrerForSite, hostMatches, isReferredSource, normalizeSource, parseDeviceBrowser, sanitizeReferrer, scoreStoredVisit, validateEngagement };
+export { attributionData, buildHistoricReferralIpGroups, buildSessions, classifyRequest, classifyRetroSession, classifySessionEvidence, externalReferrerForSite, historicalPathKind, hostMatches, isReferredSource, normalizeSource, parseDeviceBrowser, sanitizeReferrer, scoreStoredVisit, validateEngagement };
 
 export default {
   async fetch(request, env, ctx) {
@@ -644,7 +802,7 @@ export default {
     const siteName = env.SITE_NAME || url.hostname.replace(/^www\./, "");
     if (url.pathname === LOG_PATH) return readLogs(request, env, url);
     if (url.pathname === AUDIT_PATH) return readAudit(request, env, url);
-    if (url.pathname === RETRO_REPORT_PATH) return sendHistoricReferralReport(request, env, siteName);
+    if (url.pathname === RETRO_REPORT_PATH) return sendHistoricReferralReport(request, env, siteName, url);
     const identity = visitorIdentity(request);
     if (url.pathname === ANALYTICS_PATH) return handleAnalytics(request, env, siteName, identity);
 

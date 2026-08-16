@@ -29,10 +29,15 @@ Authenticated audit access is available at
 `/_visitor-audit?session_id=<uuid>`. It returns the session, visits, engagement
 events, classification history, visitor profile, and related security events.
 
-An authenticated `POST /_visitor-retro-report` generates an emailed `retro-v1`
-lookback of all server-recorded external-referral sessions. It deliberately uses
-only evidence present in historical rows and labels results likely human,
-uncertain, or likely automated.
+An authenticated `POST /_visitor-retro-report` generates an emailed `retro-v2`
+lookback grouped by every exact IP with a server-recorded external referral.
+Historical rows are classified as HTML pages, assets, or technical probes before
+session reconstruction. Only HTML pages contribute page, route, and page-span
+metrics; assets are excluded, while scanner and discovery paths remain automation
+evidence. Add `?email=0` to return the protected report text without sending it.
+The report uses only evidence present in historical rows and labels IP groups
+likely human, uncertain, mixed, or likely automated. An IP is explicitly treated
+as a low-quality grouping key rather than a person-level identity.
 
 Run `npm test` for the observed-traffic classifier fixtures.
 
