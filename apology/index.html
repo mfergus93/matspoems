@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Apology & Vulnerability</title>
+  <meta name="description" content="A personal letter of apology and reflection on vulnerability by Matt.">
+  <meta name="author" content="Matt">
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;1,400;1,500&family=Plus+Jakarta+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+
+  <!-- Favicon -->
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+
+  <!-- Stylesheet -->
+  <link rel="stylesheet" href="/styles.css">
+
+  <style>
+    .prose-page {
+      max-width: 720px;
+      margin: 0 auto;
+      padding-top: 2rem;
+    }
+
+    .top-bar {
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+      margin-bottom: 1.5rem;
+    }
+
+    .section-nav {
+      display: flex;
+      gap: 0.75rem;
+      margin-bottom: 2.5rem;
+      justify-content: center;
+    }
+
+    .section-nav-btn {
+      padding: 0.5rem 1.25rem;
+      font-family: var(--font-sans);
+      font-size: 0.875rem;
+      font-weight: 500;
+      border-radius: var(--radius-full);
+      border: 1px solid var(--border-color);
+      background: var(--bg-surface);
+      color: var(--text-secondary);
+      cursor: pointer;
+      transition: all var(--transition-fast);
+      text-decoration: none;
+    }
+
+    .section-nav-btn:hover, .section-nav-btn.active {
+      background: var(--bg-secondary);
+      color: var(--text-primary);
+      border-color: var(--border-hover);
+    }
+
+    .prose-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-lg);
+      padding: 2.5rem 2rem;
+      margin-bottom: 3rem;
+      box-shadow: var(--shadow-md);
+      transition: background-color var(--transition-normal), border-color var(--transition-normal);
+    }
+
+    .prose-title {
+      font-family: var(--font-serif);
+      font-size: 2.25rem;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 1.75rem;
+      letter-spacing: -0.01em;
+      border-bottom: 2px solid var(--accent-gold-glow);
+      padding-bottom: 0.5rem;
+    }
+
+    .prose-body {
+      font-family: var(--font-serif);
+      font-size: 1.25rem;
+      line-height: 1.85;
+      color: var(--text-poem);
+      white-space: pre-wrap;
+    }
+
+    .prose-body p {
+      margin-bottom: 1.5rem;
+    }
+
+    .prose-divider {
+      text-align: center;
+      margin: 3rem 0;
+      color: var(--text-muted);
+      font-family: var(--font-serif);
+      font-size: 1.5rem;
+      letter-spacing: 0.5em;
+    }
+
+    @media (max-width: 640px) {
+      .prose-card {
+        padding: 1.75rem 1.25rem;
+      }
+      .prose-title {
+        font-size: 1.875rem;
+      }
+      .prose-body {
+        font-size: 1.125rem;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="app-container prose-page">
+    
+    <!-- Top Bar with Theme Controls Only -->
+    <div class="top-bar">
+      <div class="theme-selector-wrapper">
+        <select id="themeSelect" class="theme-select" aria-label="Select color theme">
+          <option value="light">Light</option>
+          <option value="dark">Dark</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Quick Navigation Jump Buttons -->
+    <div class="section-nav">
+      <a href="#apology" class="section-nav-btn active" id="navBtnApology">Apology</a>
+      <a href="#vulnerability" class="section-nav-btn" id="navBtnVulnerability">Vulnerability</a>
+    </div>
+
+    <!-- Main Content -->
+    <main>
+      
+      <!-- Apology Section -->
+      <article id="apology" class="prose-card">
+        <h1 class="prose-title">Apology</h1>
+        <div class="prose-body">Emma,
+
+Sweet girl, I was so mean to you.
+
+I felt you reach for me.
+
+But we echoed an old betrayal.
+I held that against you.
+
+I made you feel unsafe, unwanted, unheard, like an object.
+
+My wound is mine to control. To heal. Not yours to survive.
+I'm sorry I let it reach you.
+
+I was so busy protecting myself that I stopped listening to you.
+I replay your words that day. Now I hear them.
+I didn't show you I cared when it mattered most.
+
+I believed I couldn't be hurt.
+I could. I was. I am.
+I unraveled.
+And then I gave you new reasons to keep your distance.
+
+Some days I didn’t want us to be together. Some days I did.
+That isn’t what I’m grieving.
+It's that I lost you altogether. The silence.
+I don't know if I'll ever hear your voice again.
+
+I wonder if the worst of me is all you remember.
+If sending this does anything but cause us pain.
+
+I care about you. You matter to me. I am sorry.
+
+And yeah, I miss our stupid banter. Best part of my day.
+
+Matt</div>
+      </article>
+
+      <div class="prose-divider">❖ ❖ ❖</div>
+
+      <!-- Vulnerability Section -->
+      <article id="vulnerability" class="prose-card">
+        <h2 class="prose-title">Vulnerability</h2>
+        <div class="prose-body">I was petrified of being vulnerable. Somewhere I learned to not be vulnerable precisely when the moment requires. I am practicing it now.
+
+I flirt with other women in front of the one I care about. To hide my need, to pretend that I'd be okay without them. I thought it was unique to a particular situation from my past, its not.
+
+When we looked deeply into each others eyes, or embraced, I wouldn't give any more of me. So many moments I regret not speaking softly to you, not lingering with you.
+
+You told me that fateful day how long it takes to build a good relationship. I wasn't listening to you. I didn't empathise with the situation you found yourself in. I gave you an ultimatum because I wanted relief. My upset at our circumstances, my insecurities, my inability to let myself be vulnerable. My new medication exasperated these feelings, it did not create them.
+
+We surged towards each other after I left you in the yard. Then I put on my salesman's face as we walked together instead of being myself.
+
+You felt me pushing into your life, you felt cornered. No wonder you reacted like you did. I was a tyrant.
+
+I told you that you were playing a game with me, instead of realizing how I'd made you feel. At the final moment instead of asking what we meant, I simply stated that you touched me.
+
+I showed you no sweetness or kindness. You, the person I cared about, got coldness and ambivalence. I was sweeter to Makenna's dog.
+
+There is a hurt kid in me who is terrified of abandonment. The people I loved began leaving me from a young age. It followed me into my first serious relationship. We would both pretend to leave each other. And both elaborately protest.
+
+When you disappeared, it was quick and brutal. I don't blame you. Slowly I realized how deeply I cared about you, and I felt truly abandoned for the first time in years.
+
+I came undone, I protested.
+
+The meme you sent me meant more than you probably knew. At the time I hadn't even begun to understand why. It told that frightened part of me that we were cool. I was too busy crashing out to notice, and I returned a small kindness with a new push.
+
+All this frightened child inside me wants is to know that he has not been abandoned. Its not yours to fix.</div>
+      </article>
+
+    </main>
+
+  </div>
+
+  <!-- Theme Handler & Navigation Script -->
+  <script>
+    // Theme Management
+    const themeSelect = document.getElementById('themeSelect');
+    const savedTheme = localStorage.getItem('matspoems_theme') || 'light';
+    document.documentElement.setAttribute('data-theme', savedTheme);
+    if (themeSelect) themeSelect.value = savedTheme;
+
+    themeSelect?.addEventListener('change', (e) => {
+      const theme = e.target.value;
+      document.documentElement.setAttribute('data-theme', theme);
+      localStorage.setItem('matspoems_theme', theme);
+    });
+
+    // Active Section Navigation Highlight
+    const apologyEl = document.getElementById('apology');
+    const vulnerabilityEl = document.getElementById('vulnerability');
+    const btnApology = document.getElementById('navBtnApology');
+    const btnVulnerability = document.getElementById('navBtnVulnerability');
+
+    window.addEventListener('scroll', () => {
+      const vulnTop = vulnerabilityEl.getBoundingClientRect().top;
+      if (vulnTop <= 250) {
+        btnVulnerability.classList.add('active');
+        btnApology.classList.remove('active');
+      } else {
+        btnApology.classList.add('active');
+        btnVulnerability.classList.remove('active');
+      }
+    });
+  </script>
+
+  <!-- Analytics Script -->
+  <script src="/analytics.js"></script>
+</body>
+</html>
