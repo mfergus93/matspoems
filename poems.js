@@ -13,6 +13,20 @@
 
 const POEMS_DATA = [
   {
+    id: "koi-no-yokan",
+    title: "Koi no yokan",
+    date: "2026-11-20",
+    tags: ["Haiku", "Longing"],
+    stanzas: [
+      [
+        "november wind...",
+        "only her perfect red hair",
+        "still turns toward me"
+      ]
+    ],
+    excerpt: "november wind... only her perfect red hair..."
+  },
+  {
     id: "across-from-a-raven",
     title: "Across from a Raven",
     date: "2026-08-08",
