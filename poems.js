@@ -16,7 +16,6 @@ const POEMS_DATA = [
     id: "koi-no-yokan",
     title: "Koi no yokan",
     date: "2026-11-20",
-    tags: ["Haiku", "Longing"],
     stanzas: [
       [
         "november wind...",
